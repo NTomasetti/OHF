@@ -67,13 +67,10 @@ cars %>%
   .$ID %>%
   unique() -> splinesID
 
-transformCoord <- function(pos, modX, modY){
+transformCoord <- function(pos, centre){
   x <- pos[1]
   y <- pos[2]
-  d <- pos[3]
-  centre <- data.frame(d = seq(d-1.5, d+1.5, 0.00025))
-  centre$yhat <- predict(modY, centre$d)$y
-  centre$xhat <- predict(modX, centre$d)$y
+  centre <- centre[abs(centre$yhat - y) < 15,] 
   centre$dist <- sqrt((x - centre$xhat)^2 + (y - centre$yhat)^2)
   closest <- centre[which.min(centre$dist),]
   relX <- sign(x - closest$xhat) * closest$dist
@@ -93,10 +90,14 @@ for(i in 1:5){
     filter(startLane == i & !ID %in%splinesID) %>% 
     ungroup() -> toPredict
   
+  centrePath <- data.frame(d = seq(min(toPredict$dist), max(toPredict$dist), length.out = 1000000))
+  centrePath$xhat <- predict(modX, centrePath$d)$y
+  centrePath$yhat <- predict(modY, centrePath$d)$y
+  
   for(j in seq_along(unique(toPredict$ID))){
     carJ <- filter(toPredict, ID == unique(toPredict$ID)[j])
-    rel <- select(carJ, x, y, dist) %>%
-      apply(1, function(row) transformCoord(c(row[1], row[2], row[3]), modX, modY)) %>% 
+    rel <- select(carJ, x, y) %>%
+      apply(1, function(row) transformCoord(c(row[1], row[2]), centre)) %>% 
       t() %>% as.data.frame()
     
     colnames(rel) <- c('relX', 'relY')
@@ -120,9 +121,9 @@ cars %>%
          y = y * mPerFoot,
          relV = sqrt((relX - lag(relX))^2 + (relY - lag(relY))^2),
          relA = relV - lag(relV),
-         relD = atan2(relY - lagRelY, relX - lagRelX),
+         relD = atan2(relY - lag(relY), relX - lag(relX)),
          relD = ifelse(relV == 0, lag(relD), relD),
-         changeD = relD - lag(rel(D))) %>%
+         changeD = relD - lag(relD)) %>%
   filter(n > 2) %>%
   ungroup() %>% 
   select(ID, changed, lane, startLane, relX, relY, relV, relA, relD, x, y, time) -> carsAug
@@ -130,7 +131,7 @@ cars %>%
 write.csv(carsAug, 'carsAug.csv', row.names = FALSE)
 
 carsAug %>%
-  filter(ID %in% sample(carsAug$ID, 5)) -> pacfData
+  filter(ID %in% sample(carsAug$ID, 2)) -> pacfData
 
 IDs <- unique(pacfData$ID)
 
@@ -140,8 +141,7 @@ pacfData %>%
   mutate(time = time - min(time),
          changeDel = relD - lag(relD)) %>%
   rename(a = relA, v = relV, del = relD) %>%
-  filter(time < 55000) %>%
-  GGally::ggpairs(cols = 3:6)
+  #filter(time < 55000) %>%
   ungroup() %>%
   mutate(ID = case_when(ID == IDs[1] ~ 'Vehicle 1', 
                         ID == IDs[2] ~ 'Vehicle 2',
