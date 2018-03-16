@@ -1,6 +1,7 @@
 library(tidyverse)
 library(Rcpp)
 library(RcppArmadillo)
+source('MCMCFuns.R')
 
 read.csv('carsAug.csv') %>%
   select(ID, relX, relY, relA, relV, relD) %>%
@@ -8,14 +9,15 @@ read.csv('carsAug.csv') %>%
 colnames(carsAug) <- c('ID', 'x', 'a', 'y', 'v', 'delta')
 
 set.seed(1)
-N <- 3000
+N <- 100
 idSubset <- sample(unique(carsAug$ID), N)
 data <- list()
 for(i in 1:N){
   carsAug %>%
+    ungroup() %>%
     filter(ID == idSubset[i]) %>%
-    mutate(d = delta - pi/2) %>% 
-    select(a , d) %>%
+    mutate(d = relD - pi/2) %>% 
+    select(relA , d) %>%
     as.matrix() -> data[[i]]
 }
 saveRDS(data, 'MCMCData.RDS')
@@ -215,44 +217,95 @@ mixDraws <- readRDS(file = 'mixN2000K6.RDS')
 
 Independent{
   # Only used for comparision to E(theta | z) for the CH model
+  lags <- 5
+  reps <- 60000
+  thin <- 10
+  VAR <- FALSE
   
-  posMeans <- NULL
-  #TODO: New Model etc.  
-  vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'phi[1]', 'phi[2]', 'gamma[1]', 'gamma[2]') 
-  for(i in 1:N){
-    draw <- c(-5, -5, 0, 0, 0, 0)
-    hyper <- list(mean = c(-5, -5, rep(0, 4)), varInv = solve(diag(10, 6)))
-    
-    MCMC <- indepMCMC(data, 10000, draw, hyper)$draws
-    mean <- c(colMeans(exp(MCMC[5001:10000,1:2])), colMeans(MCMC[5001:10000, 3:6]))
-    
-    posMeans <- rbind(posMeans, data.frame(mean = mean, var = vars, ID = id$idSubset[i]))
-    if(i %% 50 == 0){
-      print(i)
+  error <- NULL
+  for(lags in 1:5){
+    for(i in 1:10){
+      if(VAR){
+        vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'rho', paste0('phi[', 1:(2*lags), ']'), paste0('gamma[', 1:(2*lags), ']'))
+        draw <- c(-5, -5, rep(0, 1 + 4 * lags))
+        hyper <- list(mean = c(-5, -5, rep(0, 1 + 4 * lags)), varInv = solve(diag(c(10, 10, 2.5, rep(10, 4 * lags)))))
+        MCMC <- as.data.frame(indepMCMCVAR(data[[i]], reps, draw, hyper, lags = lags, thin = thin)$draws)
+      } else {
+        vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'rho', paste0('phi[', 1:lags, ']'), paste0('gamma[', 1:lags, ']'))
+        draw <- c(-5, -5, rep(0, 1 + 2 * lags))
+        hyper <- list(mean = c(-5, -5, rep(0, 1 + 2 * lags)), varInv = solve(diag(c(10, 10, 2.5, rep(10, 2 * lags)))))
+        MCMC <- as.data.frame(indepMCMC(data[[i]], reps, draw, hyper, lags = lags, thin = thin)$draws)
+      }
+      
+      colnames(MCMC) <- vars
+      MCMC %>%
+        mutate(iter = seq_along(rho) * thin) %>%
+        filter(iter > reps/2) %>%
+        mutate(`sigma[epsilon]^{2}` = exp(`sigma[epsilon]^{2}`),
+               `sigma[eta]^{2}` = exp(`sigma[eta]^{2}`),
+               rho = 2 / (1 + exp(-rho)) - 1) %>%
+        colMeans() -> means
+      
+      T <- nrow(data[[i]])
+      for(t in (T-100):(T-1)){
+        a <- 0
+        d <- 0
+        for(j in 1:lags){
+          if(VAR){
+            a <- a  +  data[[i]][t - j, 1] * means[3 + j]  +  abs(data[[i]][t- j , 2]) * sign(data[[i]][t - j, 1]) * means[3 + lags + j]
+            d <- d  +  data[[i]][t - j, 2] * means[3 + 2 * lags + j]  +  abs(data[[i]][t- j , 1]) * sign(data[[i]][t - j, 2]) * means[3 + 3 * lags + j]
+          } else {
+            a <- a  +  data[[i]][t - j, 1] * means[3 + j] 
+            d <- d  +  data[[i]][t - j, 2] * means[3 + lags + j]
+          }
+        }
+        error <- rbind(error, data.frame(a = (a - data[[i]][t, 1])^2,
+                                         d = (d - data[[i]][t, 2])^2,
+                                         lags = lags,
+                                         var = VAR))
+      }
+      print(paste(lags, i, Sys.time()))  
     }
   }
-  saveRDS(posMeans, 'IndepPosMeans.RDS')
+  for(i in 1:10){
+    T <- nrow(data[[i]])
+    for(t in (T-100):(T-1)){
+      error <- rbind(error, data.frame(a = data[[i]][t, 1]^2,
+                                       d = data[[i]][t, 2]^2,
+                                       lags = 0,
+                                       var = VAR))
+    }
+  }
+  error %>%
+    gather(variable, SE, -lags, -var) %>%
+    filter(is.finite(SE) & !is.na(SE)) %>%
+    group_by(lags, variable, var) %>%
+    summarise(MSE = mean(SE)) %>% 
+    ggplot() + geom_line(aes(lags, MSE, colour = var)) + facet_wrap(~variable, scales = 'free') + ylim(0, 0.02)
   
-  # Fill in densMixMod and p1 from the Hierarchical Model results above (crtl-f 'densMixMod')
+
+}
+
+# Combine results from the IH and CH model for this plot
   
-  posMeans %>%
-    mutate(var = as.character(var),
-          var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]',
-                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]'))) %>%
-    filter((var == 'sigma[epsilon]^{2}' & mean > exp(-13) & mean < exp(-4.5)) |
-             (var == 'sigma[eta]^{2}' & mean > exp(-15) & mean < exp(-7.6)) | 
-             (var == 'phi[1]' & mean > -0.5 & mean < 2) |
-             (var == 'phi[2]' & mean > -1 & mean < 0.8) | 
-             (var == 'gamma[1]' & mean > 0 & mean < 2) | 
-             (var == 'gamma[2]' & mean > -1 & mean < 0.5)) %>%
-    ggplot() + geom_density(aes(mean)) + 
-    geom_blank(data = densMixMod, aes(x = support)) + 
-    facet_wrap(~var, scales = 'free', ncol = 6, labeller = label_parsed) +
-    labs(x = NULL, y = NULL) +
-    theme_bw() + 
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))-> p2
+posMeans %>%
+  mutate(var = as.character(var),
+        var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]',
+                                      'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]'))) %>%
+  filter((var == 'sigma[epsilon]^{2}' & mean > exp(-13) & mean < exp(-4.5)) |
+           (var == 'sigma[eta]^{2}' & mean > exp(-15) & mean < exp(-7.6)) | 
+           (var == 'phi[1]' & mean > -0.5 & mean < 2) |
+           (var == 'phi[2]' & mean > -1 & mean < 0.8) | 
+           (var == 'gamma[1]' & mean > 0 & mean < 2) | 
+           (var == 'gamma[2]' & mean > -1 & mean < 0.5)) %>%
+  ggplot() + geom_density(aes(mean)) + 
+  geom_blank(data = densMixMod, aes(x = support)) + 
+  facet_wrap(~var, scales = 'free', ncol = 6, labeller = label_parsed) +
+  labs(x = NULL, y = NULL) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))-> p2
   
-  gridExtra::grid.arrange(p2, p1, ncol = 1)
+gridExtra::grid.arrange(p2, p1, ncol = 1)
   
   
 }
