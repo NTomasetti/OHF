@@ -1,7 +1,7 @@
 library(mvtnorm)
 library(Rcpp)
 library(RcppArmadillo)
-sourceCpp('mixtureMCMCMetHast.cpp')
+sourceCpp('MCMCFuns.cpp')
 
 mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, error = 'gaussian', stepsize = 0.01){
   N <- length(data)
@@ -244,17 +244,9 @@ homogMCMC <- function(data, reps, draw, hyper, thin = 1, error = 'gaussian', ste
   list(draws = saveDraws, accept = accept, steps = stepsize)
 }
 
-indepMCMC <- function(data, reps, draw, hyper, thin = 1, error = 'gaussian', stepsize = 0.01){
+indepMCMC <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 1){
   # set up likelihood function and theta dimension
-  if(error == 'gaussian'){
-    likelihood <- nlogDensity
-    dim <- 6
-  } else if(error == 't') {
-    likelihood <- tlogDensity
-    dim <- 8
-  } else {
-    stop('error must be gaussian or t')
-  }
+  dim <- 3 + 2 * lags
   accept <- 0
   # set up storage for saved draws
   nSave <- floor(reps / thin)
@@ -265,8 +257,8 @@ indepMCMC <- function(data, reps, draw, hyper, thin = 1, error = 'gaussian', ste
   for(i in 2:reps){
     candidate <- draw
     candidate <- candidate + stepsize * rnorm(dim)
-    canDens <- likelihood(data, candidate, hyper$mean, hyper$varInv)
-    oldDens <- likelihood(data, draw, hyper$mean, hyper$varInv)
+    canDens <- nlogDensity(data, candidate, hyper$mean, hyper$varInv, lags)
+    oldDens <- nlogDensity(data, draw, hyper$mean, hyper$varInv, lags)
     ratio <- exp(canDens - oldDens)
     c <- stepsize / stepsizeCons
     if(runif(1) < ratio){
@@ -284,3 +276,149 @@ indepMCMC <- function(data, reps, draw, hyper, thin = 1, error = 'gaussian', ste
   }
   list(draws = saveDraws, accept = accept, steps = stepsize)
 }
+
+indepMCMCVAR <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 1){
+  # set up likelihood function and theta dimension
+  dim <- 3 + 4 * lags
+  accept <- 0
+  # set up storage for saved draws
+  nSave <- floor(reps / thin)
+  saveDraws <- matrix(0, nSave, dim)
+  # changing MH acceptance rate
+  stepsizeCons <- 0.44 * (1 - 0.44)
+  
+  for(i in 2:reps){
+    candidate <- draw
+    candidate <- candidate + stepsize * rnorm(dim)
+    canDens <- nlogDensityVAR(data, candidate, hyper$mean, hyper$varInv, lags)
+    oldDens <- nlogDensityVAR(data, draw, hyper$mean, hyper$varInv, lags)
+    ratio <- exp(canDens - oldDens)
+    c <- stepsize / stepsizeCons
+    if(runif(1) < ratio){
+      accept <- accept + 1
+      draw <- candidate
+      stepsize <- stepsize + c * (1 - 0.44) / (18 + i)
+    } else {
+      stepsize <- stepsize - c * 0.44 / (18 + i)
+    }
+    
+    # save draws
+    if(i %% thin == 0){
+      saveDraws[i/thin,] <- draw
+    }
+  }
+  list(draws = saveDraws, accept = accept, steps = stepsize)
+}
+
+indepMCMCexactVAR <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 2){
+  # set up likelihood function and theta dimension
+  dim <- 3 + 4 * lags
+  accept <- 0
+  # set up storage for saved draws
+  nSave <- floor(reps / thin)
+  saveDraws <- matrix(0, nSave, dim)
+  # changing MH acceptance rate
+  stepsizeCons <- 0.44 * (1 - 0.44)
+  
+  T <- nrow(data)
+  
+  X <- matrix(0, T-lags, 2 + 4 * lags)
+  X[,1] <- data[(lags+1):T, 1]
+  X[,2*lags + 2] <- data[(lags+1):T, 2]
+  
+  for(i in 1:lags){
+    X[,1 + i] <- data[(lags + 1 - i):(T - i), 1]
+    X[,lags + 1 + i] <- sign(data[(lags + 1 - i):(T - i), 1]) * abs(data[(lags + 1 - i):(T-i), 2])
+    X[,2*lags + 2 + i] <-  data[(lags + 1 - i):(T - i), 2]
+    X[,3*lags + 2 + i] <- sign(data[(lags + 1 - i):(T - i), 2]) * abs(data[(lags + 1 - i):(T-i), 1])
+  }
+  
+  Xsum <- matrix(0, 4*lags+2, 4*lags+2)
+  for(i in 1:(4*lags + 2)){
+    for(j in 1:(4*lags + 2)){
+      Xsum[i, j] <- sum(X[,i] * X[,j])
+    }
+  }
+  hyperVar <- diag(solve(hyper$varInv))
+  
+  for(iter in 2:reps){
+    candidate <- draw
+    candidate[1:3] <- candidate[1:3] + stepsize * rnorm(3)
+    canDens <- nlogDensityVAR(data, candidate, hyper$mean, hyper$varInv, lags)
+    oldDens <- nlogDensityVAR(data, draw, hyper$mean, hyper$varInv, lags)
+    ratio <- exp(canDens - oldDens)
+    c <- stepsize / stepsizeCons
+    if(runif(1) < ratio){
+      accept <- accept + 1
+      draw <- candidate
+      stepsize <- stepsize + c * (1 - 0.44) / (18 + i)
+    } else {
+      stepsize <- stepsize - c * 0.44 / (18 + i)
+    }
+    
+    for(i in 1:(2 * lags)){
+      # Draw Phis
+      theta_num <- 3 + i
+      meanNumer <- -Xsum[1, 1 + i]
+      
+      # mean at terms
+      for(j in 1:(2 * lags)){
+        if(j == i){
+          next
+        }
+        meanNumer = meanNumer + draw[3 + j] * Xsum[1 + i, 1 + j]
+      }
+      meanNumer = meanNumer * hyperVar[theta_num] / exp(draw[1])
+      # at dt cross product terms
+      crossConst = 0.5 * hyperVar[theta_num] * (2 / (1 + exp(-draw[3])) - 1) / (sqrt(exp(draw[1])) * sqrt(exp(draw[2])))
+      meanNumer = meanNumer + crossConst * Xsum[1 + i, 2 + 2 * lags]
+      for(j in 1:(2 * lags)){
+        meanNumer = meanNumer + crossConst * draw[3 + 2 * lags + j] * Xsum[1 + i, 2 + 2 * lags + j]
+      }
+      
+      meanDenom <- hyperVar[theta_num] / exp(draw[1]) * Xsum[1 + i, 1 + i] + 1 + (1 - (2 / (1 + exp(-draw[3])) - 1)^2)
+      var <- hyperVar[theta_num] * (1 + (1 - (2 / (1 + exp(-draw[3])) - 1)^2)) / meanDenom 
+      
+      draw[theta_num] <- rnorm(1, meanNumer / meanDenom, sqrt(var))
+    }
+    
+    
+    for(i in 1:(2 * lags)){
+      # Draw Gammas
+      theta_num <- 3 + 2 * lags + i
+      meanNumer <- - Xsum[2 + 2 * lags, 2 + 2 * lags + i]
+      
+      # mean at terms
+      for(j in 1:(2 * lags)){
+        if(j == i){
+          next
+        }
+        meanNumer = meanNumer + draw[3 + 2 * lags + j] * Xsum[2 + 2 * lags + i, 2 + 2 * lags + j]
+      }
+      meanNumer = meanNumer * hyperVar[theta_num] / exp(draw[2])
+      # at dt cross product terms
+      crossConst = 0.5 * hyperVar[theta_num] * (2 / (1 + exp(-draw[3])) - 1) / (sqrt(exp(draw[1])) * sqrt(exp(draw[2])))
+      meanNumer = meanNumer + crossConst * Xsum[2 + 2 * lags + i, 1]
+      for(j in 1:(2 * lags)){
+        meanNumer = meanNumer + crossConst * draw[3 + j] * Xsum[2 + 2 * lags + i, 3 + j]
+      }
+      
+      meanDenom <- hyperVar[theta_num] / exp(draw[2]) * Xsum[2 + 2 * lags + i, 2 + 2 * lags + i] + 1 + (1 - (2 / (1 + exp(-draw[3])) - 1)^2)
+      var <- hyperVar[theta_num] * (1 + (1 - (2 / (1 + exp(-draw[3])) - 1)^2)) / meanDenom 
+      
+      draw[theta_num] <- rnorm(1, meanNumer / meanDenom, sqrt(var))
+    }
+    
+    
+    
+    
+    # save draws
+    if(iter %% thin == 0){
+      saveDraws[iter/thin,] <- draw
+    }
+  }
+  list(draws = saveDraws, accept = accept, steps = stepsize)
+}
+
+
+

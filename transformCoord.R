@@ -67,10 +67,13 @@ cars %>%
   .$ID %>%
   unique() -> splinesID
 
-transformCoord <- function(pos, centre){
+transformCoord <- function(pos, modX, modY){
   x <- pos[1]
   y <- pos[2]
-  centre[abs(centre$yhat - y) < 15,] -> centre
+  d <- pos[3]
+  centre <- data.frame(d = seq(d-1.5, d+1.5, 0.00025))
+  centre$yhat <- predict(modY, centre$d)$y
+  centre$xhat <- predict(modX, centre$d)$y
   centre$dist <- sqrt((x - centre$xhat)^2 + (y - centre$yhat)^2)
   closest <- centre[which.min(centre$dist),]
   relX <- sign(x - closest$xhat) * closest$dist
@@ -90,36 +93,115 @@ for(i in 1:5){
     filter(startLane == i & !ID %in%splinesID) %>% 
     ungroup() -> toPredict
   
-  centrePath <- data.frame(d = seq(min(toPredict$dist), max(toPredict$dist), length.out = 25000))
-  centrePath$xhat <- predict(modX, centrePath$d)$y
-  centrePath$yhat <- predict(modY, centrePath$d)$y
-  
   for(j in seq_along(unique(toPredict$ID))){
     carJ <- filter(toPredict, ID == unique(toPredict$ID)[j])
-    rel <- select(carJ, x, y) %>%
-      apply(1, function(row) transformCoord(c(row[1], row[2]), centrePath)) %>% 
+    rel <- select(carJ, x, y, dist) %>%
+      apply(1, function(row) transformCoord(c(row[1], row[2], row[3]), modX, modY)) %>% 
       t() %>% as.data.frame()
+    
     colnames(rel) <- c('relX', 'relY')
-    rel$ID <- unique(toPredict$ID)[j]
+    rel$ID <- carJ$ID
     rel$time <- carJ$time
     
     relCoord <- rbind(relCoord, rel)
     print(paste(i, j))
   }
 }
+mPerFoot <- 0.3048
 
 cars %>% 
-  filter(!ID %in%splinesID) %>%
+  filter(!ID %in% splinesID) %>%
   left_join(relCoord) %>%
   group_by(ID) %>%
   mutate(n = seq_along(time),
-         lagRelX = ifelse(n == 1, 0, lag(relX)),
-         lagRelY = ifelse(n == 1, 0, lag(relY)),
-         relV = sqrt((relX - lagRelX)^2 + (relY - lagRelY)^2),
-         relA = relV - ifelse(n <= 2, 0, lag(relV)),
-         relD = atan2(relY - lagRelY, relX - lagRelX)) %>%
+         relX = relX * mPerFoot,
+         relY = relY * mPerFoot,
+         x = x * mPerFoot,
+         y = y * mPerFoot,
+         relV = sqrt((relX - lag(relX))^2 + (relY - lag(relY))^2),
+         relA = relV - lag(relV),
+         relD = atan2(relY - lagRelY, relX - lagRelX),
+         relD = ifelse(relV == 0, lag(relD), relD),
+         changeD = relD - lag(rel(D))) %>%
   filter(n > 2) %>%
   ungroup() %>% 
   select(ID, changed, lane, startLane, relX, relY, relV, relA, relD, x, y, time) -> carsAug
 
 write.csv(carsAug, 'carsAug.csv', row.names = FALSE)
+
+carsAug %>%
+  filter(ID %in% sample(carsAug$ID, 5)) -> pacfData
+
+IDs <- unique(pacfData$ID)
+
+pacfData %>%
+  select(ID, time, relD, relA, relV) %>%
+  group_by(ID) %>%
+  mutate(time = time - min(time),
+         changeDel = relD - lag(relD)) %>%
+  rename(a = relA, v = relV, del = relD) %>%
+  filter(time < 55000) %>%
+  GGally::ggpairs(cols = 3:6)
+  ungroup() %>%
+  mutate(ID = case_when(ID == IDs[1] ~ 'Vehicle 1', 
+                        ID == IDs[2] ~ 'Vehicle 2',
+                        ID == IDs[3] ~ 'Vehicle 3',
+                        ID == IDs[4] ~ 'Vehicle 4',
+                        ID == IDs[5] ~ 'Vehicle 5'),
+         ID = factor(ID)) %>%
+  ungroup() %>%
+  gather(var, value, -ID, -time) %>%
+  ggplot() + geom_line(aes(time, value)) + 
+  facet_grid(var ~ ID, scales = 'free') + 
+  labs(x = 'T', y = 'Value') + theme_bw()
+
+
+pacfs <- data.frame()
+for(i in 1:5){
+  id <- unique(pacfData$ID)[i]
+  
+  pacfData %>%
+    filter(ID == id) %>%
+    .$relD %>%
+    pacf(plot = FALSE) %>%
+    with(data.frame(lag, acf)) %>%
+    mutate(ID = paste0('Vehicle ', i),
+           var = 'del') -> tmp
+  pacfs <- rbind(pacfs, tmp)
+  
+  pacfData %>%
+    filter(ID == id) %>%
+    .$relA %>%
+    pacf(plot = FALSE) %>%
+    with(data.frame(lag, acf)) %>%
+    mutate(ID = paste0('Vehicle ', i),
+           var = 'a') -> tmp
+  pacfs <- rbind(pacfs, tmp)
+  
+  pacfData %>%
+    filter(ID == id) %>%
+    .$relV %>%
+    pacf(plot = FALSE) %>%
+    with(data.frame(lag, acf)) %>%
+    mutate(ID = paste0('Vehicle ', i),
+           var = 'v') -> tmp
+  pacfs <- rbind(pacfs, tmp)
+  
+  pacfData %>%
+    filter(ID == id) %>%
+    mutate(n = seq_along(ID),
+           changeDel = relD - lag(relD)) %>%
+    filter(n > 1) %>%
+    .$changeDel %>%
+    pacf(plot = FALSE) %>%
+    with(data.frame(lag, acf)) %>%
+    mutate(ID = paste0('Vehicle ', i),
+           var = 'changeDel') -> tmp
+  pacfs <- rbind(pacfs, tmp)
+  
+}
+
+ggplot(pacfs) + geom_bar(aes(lag, acf), stat = 'identity') + 
+  facet_grid(var~ID) + labs(x = 'Lag', y = 'Partial Autocorrelation') + 
+  theme_bw()
+
