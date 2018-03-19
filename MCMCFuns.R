@@ -3,6 +3,9 @@ library(Rcpp)
 library(RcppArmadillo)
 sourceCpp('MCMCFuns.cpp')
 
+# An MCMC algorithn for the clustered hierarchical model with a K component gaussian prior distribution
+# Each theta_i is drawn with metropolis hastings, 
+# Prior components (beta) are drawn with gibbs from the posterior conditionals
 mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, error = 'gaussian', stepsize = 0.01){
   N <- length(data)
   stepsize <- rep(stepsize, N)
@@ -129,6 +132,8 @@ mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, error = 'gauss
   list(draws = saveDraws, accept = accept, steps = stepsize)
 }
 
+# An MCMC algorithm for the homogenous model
+# Variance components are drawn with metropolis hastings while ar components are drawn from gibbs posterior conditionals
 homogMCMC <- function(data, reps, draw, hyper, thin = 1, error = 'gaussian', stepsize = 0.01){
   N <- length(data)
   # set up likelihood function and theta dimension
@@ -244,27 +249,37 @@ homogMCMC <- function(data, reps, draw, hyper, thin = 1, error = 'gaussian', ste
   list(draws = saveDraws, accept = accept, steps = stepsize)
 }
 
-indepMCMC <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 1){
+# An MCMC algorithm for the independent model
+# The entire theta is drawn at the same time with metropolis hastings
+# The model can be a var structure or a standard ar(lags).
+indepMCMC <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 1, VAR = FALSE){
   # set up likelihood function and theta dimension
-  dim <- 3 + 2 * lags
+  if(VAR){
+    dim <- 3 + 4 * lags
+    likelihood <- nlogDensityVAR
+  } else {
+    dim <- 3 + 2 * lags
+    likelihood <- nlogDensity
+  }
   accept <- 0
   # set up storage for saved draws
   nSave <- floor(reps / thin)
   saveDraws <- matrix(0, nSave, dim)
   # changing MH acceptance rate
   stepsizeCons <- 0.44 * (1 - 0.44)
+  oldDens <- likelihood(data, draw, hyper$mean, hyper$varInv, lags)
   
   for(i in 2:reps){
     candidate <- draw
     candidate <- candidate + stepsize * rnorm(dim)
-    canDens <- nlogDensity(data, candidate, hyper$mean, hyper$varInv, lags)
-    oldDens <- nlogDensity(data, draw, hyper$mean, hyper$varInv, lags)
+    canDens <- likelihood(data, candidate, hyper$mean, hyper$varInv, lags)
     ratio <- exp(canDens - oldDens)
     c <- stepsize / stepsizeCons
     if(runif(1) < ratio){
       accept <- accept + 1
       draw <- candidate
       stepsize <- stepsize + c * (1 - 0.44) / (18 + i)
+      oldDens <- canDens
     } else {
       stepsize <- stepsize - c * 0.44 / (18 + i)
     }
@@ -277,40 +292,9 @@ indepMCMC <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags =
   list(draws = saveDraws, accept = accept, steps = stepsize)
 }
 
-indepMCMCVAR <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 1){
-  # set up likelihood function and theta dimension
-  dim <- 3 + 4 * lags
-  accept <- 0
-  # set up storage for saved draws
-  nSave <- floor(reps / thin)
-  saveDraws <- matrix(0, nSave, dim)
-  # changing MH acceptance rate
-  stepsizeCons <- 0.44 * (1 - 0.44)
-  
-  for(i in 2:reps){
-    candidate <- draw
-    candidate <- candidate + stepsize * rnorm(dim)
-    canDens <- nlogDensityVAR(data, candidate, hyper$mean, hyper$varInv, lags)
-    oldDens <- nlogDensityVAR(data, draw, hyper$mean, hyper$varInv, lags)
-    ratio <- exp(canDens - oldDens)
-    c <- stepsize / stepsizeCons
-    if(runif(1) < ratio){
-      accept <- accept + 1
-      draw <- candidate
-      stepsize <- stepsize + c * (1 - 0.44) / (18 + i)
-    } else {
-      stepsize <- stepsize - c * 0.44 / (18 + i)
-    }
-    
-    # save draws
-    if(i %% thin == 0){
-      saveDraws[i/thin,] <- draw
-    }
-  }
-  list(draws = saveDraws, accept = accept, steps = stepsize)
-}
-
-indepMCMCexactVAR <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 2){
+# The above (for the VAR model only) but non variance components are drawn with gibbs from their posterior conditionals
+# There is most likely a mistake somewhere in the code. Use the MH version instead.
+indepMCMCgibbsVAR <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 2){
   # set up likelihood function and theta dimension
   dim <- 3 + 4 * lags
   accept <- 0

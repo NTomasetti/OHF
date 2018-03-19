@@ -60,7 +60,6 @@ double signDouble(double x){
   }
 }
 
-
 // [[Rcpp::export]]
 double nlogDensityVAR (mat data, vec theta, vec mu, mat varInv, int lags = 1){
   int T = data.n_rows;

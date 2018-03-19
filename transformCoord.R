@@ -1,10 +1,12 @@
 library(tidyverse)
+library(Rcpp)
+library(RcppArmadillo)
 
-# Load data
+# Load data.
 cars1 = read.table('vehicle-trajectory-data/trajectories1.txt')
 
 cars2 = read.table('vehicle-trajectory-data/trajectories2.txt')
-cars2[,1] = cars2[,1] + 10000
+cars2[,1] = cars2[,1] + 10000 # IDs restart at one for each segment, so add 10000/20000 so IDs are unique for the combined set
 cars2[,15] = cars2[,15] + 10000
 
 cars3 = read.table('vehicle-trajectory-data/trajectories3.txt')
@@ -19,45 +21,37 @@ colnames(cars) = c('ID', 'frame', 'totalFrames', 'time', 'x', 'y',
                    'veloc', 'accel', 'lane', 'proceeding', 'following', 
                    'spacing', 'headway')
 
+# Example data picture
 cars %>%
-  filter(ID %in% head(unique(.$ID), 10)) %>%
+  filter(ID < 100) %>%
   ggplot() + geom_path(aes(x, y, group = ID)) +
   labs(y = NULL, x = 'Lane') + 
   theme_bw() + 
   scale_x_continuous(labels = c('Lane 1', 'Lane 2', 'Lane 3', 'Lane 4', 'Lane 5', 'Entry Lane'),
                      breaks = c(6, 18, 30, 40, 50, 65))
 
-#Operations on data
-cars %>%
-  mutate(time = time - min(time)) -> cars
+# Initial operations on data lanes, and calculating distanct
 cars %>%
   group_by(ID) %>%
   summarise(medLane = median(lane),
             changed = any(lane != medLane),
-            enterExit = any(lane > 5)) %>%
+            enterExit = any(lane > 5),
+            startLane = head(lane, 1)) %>%
   ungroup() %>%
   right_join(cars, by = "ID") -> cars
 
-cars %>% 
-  group_by(ID) %>%
-  mutate(n = seq_along(time)) %>%
-  filter(n == 1) %>%
-  select(ID, lane) %>%
-  rename(startLane = lane) %>%
-  left_join(cars) -> cars
-
 cars %>%
-  group_by(ID) %>%
   filter(enterExit == FALSE) %>%
-  mutate(n = seq_along(frame), 
+  group_by(ID) %>%
+  mutate(time = time - min(time),
+         n = seq_along(frame), 
          xlag = ifelse(n == 1, 0, lag(x)), 
          ylag = ifelse(n == 1, 0, lag(y)),
          v = sqrt((x-xlag)^2 + (y-ylag)^2),
          delta = atan2(y - ylag, x - xlag),
          dist = cumsum(v)) -> cars
 
-
-
+# Define spline degree and extract 100 vehicles per lane that did not change lane to estimate spline models
 degree <- 50
 
 cars %>%
@@ -67,6 +61,8 @@ cars %>%
   .$ID %>%
   unique() -> splinesID
 
+# Input pos = (x, y) and centre, a dataframe of distance / spline xhat / spline yhat to transform coordinates
+# The function will find the element of the xhat / yhat combo of centre which minimises the Euc. distance to the input (x, y).
 transformCoord <- function(pos, centre){
   x <- pos[1]
   y <- pos[2]
@@ -75,11 +71,16 @@ transformCoord <- function(pos, centre){
   closest <- centre[which.min(centre$dist),]
   relX <- sign(x - closest$xhat) * closest$dist
   relY <- closest$d
-  
   return(c(relX, relY))
 }
 
+# Loop through each lane to:
+# 1) Fit spline models
+# 2) Evaluate spline on a fine grid of distances
+# 3) Loop through each vehicle in the lane to calculate relative coordinates
+# Result: Relcoord dataframe with relX / relY / time / ID
 relCoord <- NULL
+skip <- NULL
 for(i in 1:5){
   cars %>%
     filter(lane == i  & ID %in% splinesID) -> carSubset
@@ -97,8 +98,12 @@ for(i in 1:5){
   for(j in seq_along(unique(toPredict$ID))){
     carJ <- filter(toPredict, ID == unique(toPredict$ID)[j])
     rel <- select(carJ, x, y) %>%
-      apply(1, function(row) transformCoord(c(row[1], row[2]), centre)) %>% 
+      apply(1, function(row) transformCoord(c(row[1], row[2]), centrePath)) %>% 
       t() %>% as.data.frame()
+    if(nrow(rel) == 1){
+      skip <- c(skip, carJ$ID[1])
+      next
+    }
     
     colnames(rel) <- c('relX', 'relY')
     rel$ID <- carJ$ID
@@ -110,8 +115,11 @@ for(i in 1:5){
 }
 mPerFoot <- 0.3048
 
+# Combine relcoord with the original cars dataset
+# Calculate relative velocity / angle / acceleration / change in angle
+
 cars %>% 
-  filter(!ID %in% splinesID) %>%
+  filter(!ID %in% c(skip, splinesID)) %>%
   left_join(relCoord) %>%
   group_by(ID) %>%
   mutate(n = seq_along(time),
@@ -122,18 +130,48 @@ cars %>%
          relV = sqrt((relX - lag(relX))^2 + (relY - lag(relY))^2),
          relA = relV - lag(relV),
          relD = atan2(relY - lag(relY), relX - lag(relX)),
-         relD = ifelse(relV == 0, lag(relD), relD),
          changeD = relD - lag(relD)) %>%
   filter(n > 2) %>%
   ungroup() %>% 
-  select(ID, changed, lane, startLane, relX, relY, relV, relA, relD, x, y, time) -> carsAug
+  select(ID, relX, relY, relV, relA, relD, changeD, time, changed, lane, startLane, x, y, time) -> carsAug
+
+# A c++ funciton to loop through delta and find cases where relV == 0, and apply d_t = d_{t-1}
+
+cppFunction(depends = "RcppArmadillo",
+            'arma::vec lagDelta(arma::mat data) {
+              int T = data.n_rows;
+              arma::vec out(T);
+              out(0) = data(0, 5);
+              for(int i = 1; i < T; ++i){
+                if(data(i, 0) == data(i-1, 0) & data(i, 3) == 0){
+                  out(i) = out(i-1);
+                } else {
+                  out(i) = data(i, 5);
+                }
+              }
+              return out;
+            }')
+
+carsAug$relD = lagDelta(as.matrix(carsAug))
+
 
 write.csv(carsAug, 'carsAug.csv', row.names = FALSE)
 
-carsAug %>%
-  filter(ID %in% sample(carsAug$ID, 2)) -> pacfData
+# This will plot the time series of v / d / a / change in d and associated pacfs for a sample of vehicles.
+# Even with the d_t = d_{t-1} transform for vehicles that have stopped, stationary (y_t = y_{t-1}) vehicles can have tiny movements in x that lead to huge spikes in delta to 0 or pi.
+# This may not matter too much, if V is small the angle does not really matter.
+# Drop the filter / group / ungroup lines to include vehicles that stopped.
 
-IDs <- unique(pacfData$ID)
+carsAug %>%
+  group_by(ID) %>% 
+  filter(min(relV) > 0) %>%
+  ungroup() %>%
+  .$ID %>%
+  unique() %>%
+  sample(5) -> plotID
+
+carsAug %>%
+  filter(ID %in% plotID) -> pacfData
 
 pacfData %>%
   select(ID, time, relD, relA, relV) %>%
@@ -141,13 +179,13 @@ pacfData %>%
   mutate(time = time - min(time),
          changeDel = relD - lag(relD)) %>%
   rename(a = relA, v = relV, del = relD) %>%
-  #filter(time < 55000) %>%
+  filter(time < 15000) %>%
   ungroup() %>%
-  mutate(ID = case_when(ID == IDs[1] ~ 'Vehicle 1', 
-                        ID == IDs[2] ~ 'Vehicle 2',
-                        ID == IDs[3] ~ 'Vehicle 3',
-                        ID == IDs[4] ~ 'Vehicle 4',
-                        ID == IDs[5] ~ 'Vehicle 5'),
+  mutate(ID = case_when(ID == plotID[1] ~ 'Vehicle 1', 
+                        ID == plotID[2] ~ 'Vehicle 2',
+                        ID == plotID[3] ~ 'Vehicle 3',
+                        ID == plotID[4] ~ 'Vehicle 4',
+                        ID == plotID[5] ~ 'Vehicle 5'),
          ID = factor(ID)) %>%
   ungroup() %>%
   gather(var, value, -ID, -time) %>%
