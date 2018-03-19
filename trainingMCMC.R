@@ -33,27 +33,145 @@ for(i in 1:N){
 saveRDS(data, 'MCMCData.RDS')
 saveRDS(idSubset, 'trainingID.RDS')
 
+# MCMC for the independent model
+# This is used for model selection
+Independent{
+  
+  # Loop through VAR: TRUE / FALSE and up to six lags for both variables to
+  # 1) Fit independent MCMC for data from each vehicle for 1:(T-100)
+  # 2) Calculate posterior means for each element of theta
+  # 3) Conduct one step ahead forecasts from T-99:T
+  # 4) Calculate squared error
+  reps <- 20000
+  thin <- 10
+  var <- c(TRUE, FALSE)
+  
+  # Save both the squared forecast error and posterior means.
+  error <- NULL
+  posMean <- NULL
+  for(k in 1:2){
+    for(lags in 1:6){
+      for(i in 1:N){
+        T <- nrow(data[[i]])
+        # Var = TRUE and FALSE have different parameters
+        if(var[k]){
+          vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'rho', paste0('phi[', 1:(2*lags), ']'), paste0('gamma[', 1:(2*lags), ']'))
+          draw <- c(-5, -5, rep(0, 1 + 4 * lags))
+          hyper <- list(mean = c(-5, -5, rep(0, 1 + 4 * lags)), varInv = solve(diag(c(10, 10, 2.5, rep(10, 4 * lags)))))
+        } else {
+          vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'rho', paste0('phi[', 1:lags, ']'), paste0('gamma[', 1:lags, ']'))
+          draw <- c(-5, -5, rep(0, 1 + 2 * lags))
+          hyper <- list(mean = c(-5, -5, rep(0, 1 + 2 * lags)), varInv = solve(diag(c(10, 10, 2.5, rep(10, 2 * lags)))))
+        }
+        MCMC <- as.data.frame(indepMCMC(data[[i]][1:(T-100),], reps, draw, hyper, lagsA = lags, lagsD = lags, thin = thin, VAR = var[k])$draws)
+        
+        # Transform the variance matrix from R^3 to sigma^2 and rho
+        colnames(MCMC) <- vars
+        MCMC %>%
+          mutate(iter = seq_along(rho) * thin) %>%
+          filter(iter > reps/2) %>%
+          mutate(`sigma[epsilon]^{2}` = exp(`sigma[epsilon]^{2}`),
+                 `sigma[eta]^{2}` = exp(`sigma[eta]^{2}`),
+                 rho = 2 / (1 + exp(-rho)) - 1) %>%
+          select(-iter) %>%
+          colMeans() -> means
+        
+        posMean <- rbind(posMean, data.frame(ID = i, 
+                                             var = vars,
+                                             mean = means,
+                                             lags = lags,
+                                             VAR = var[k])) 
+        
+        for(t in (T-100):(T-1)){
+          a <- 0
+          d <- 0
+          for(j in 1:lags){
+            if(var[k]){
+              a <- a  +  data[[i]][t - j, 1] * means[3 + j]  +  abs(data[[i]][t- j , 2]) * sign(data[[i]][t - j, 1]) * means[3 + lags + j]
+              d <- d  +  data[[i]][t - j, 2] * means[3 + 2 * lags + j]  +  abs(data[[i]][t- j , 1]) * sign(data[[i]][t - j, 2]) * means[3 + 3 * lags + j]
+            } else {
+              a <- a  +  data[[i]][t - j, 1] * means[3 + j] 
+              d <- d  +  data[[i]][t - j, 2] * means[3 + lags + j]
+            }
+          }
+          error <- rbind(error, data.frame(a = (a - data[[i]][t, 1])^2,
+                                           d = (d - data[[i]][t, 2])^2,
+                                           lags = lags,
+                                           VAR = var[k],
+                                           ID = i))
+        }
+        if(i %% 5 == 0){
+          print(paste0('VAR: ', var[k], ', lags: ', lags, ', vehicle: ', i, ', time: ', Sys.time()))  
+        }
+      }
+    }
+  }
+  # Forecasts assuming a constant mean of 0, pi/2 (note: d is already delta - pi/2) and no estimated lags.
+  for(i in 1:N){
+    T <- nrow(data[[i]])
+    for(t in (T-100):(T-1)){
+      error <- rbind(error, data.frame(a = data[[i]][t, 1]^2,
+                                       d = data[[i]][t, 2]^2,
+                                       lags = 0,
+                                       VAR = c(TRUE, FALSE),
+                                       ID = i))
+    }
+  }
+  # Compare each vehicles MSE under each model
+  error %>%
+    filter(lags < 5) %>%
+    group_by(lags, VAR, ID) %>%
+    summarise(MSEa = mean(a), MSEd = mean(d)) -> MSE
+  
+  MSE %>%
+    gather(variable, MSE, -lags, -VAR, -ID) %>%
+    ggplot() + geom_violin(aes(x = factor(lags), MSE)) + facet_wrap(~variable, scales = 'free')
+  
+  
+  posMean %>%
+    filter(VAR == FALSE & lags == 3) %>%
+    ggplot() + geom_density(aes(mean)) + facet_wrap(~var, scales = 'free', labeller = label_parsed)
+  
+  
+}
+
 # MCMC for the homogenous model
 HomogenoousModel {
   reps <- 50000
-  
-  #TODO: Clean up draws, hyper and posterior density plots for new model
-  draws <- c(-5, -5, 0, 0, 0, 0)
-  hyper <- list(mean = c(-5, -5, rep(0, 4)), varInv = solve(diag(10, 6)))
-  hyper$var <- diag(solve(hyper$varInv))
-  homogDraws <- homogMCMC(data, reps, draws, hyper, thin = 10, stepsize = 0.01)
-  saveRDS(homogDraws, 'homogMCMCN3000.RDS')
+  lagsA <- 3
+  lagsD <- 2
+  draws <- c(-5, -5, rep(0, 1 + lagsA + lagsD))
+  hyper <- list(mean = c(-5, -5, rep(0, 1 + lagsA + lagsD)), varInv = solve(diag(c(10, 10, 2.5, rep(10, lagsA + lagsD)))))
+  homogDraws <- homogMCMC(data, reps, draws, hyper, thin = 10, stepsize = 0.01, lagsA = 3, lagsD = 2)
+  #saveRDS(homogDraws, 'homogMCMCN3000.RDS')
   
   homogDraws$draws %>%
     as.data.frame() %>%
-    cbind(iter = 1:(reps/thin)) %>%
-    mutate(V1 = exp(V1), V2 = exp(V2)) %>%
-    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `phi[1]` = V3, `phi[2]` = V4, `gamma[1]` = V5, `gamma[2]` = V6) %>%
+    mutate(iter = seq_along(V1) * thin,
+           V1 = exp(V1), 
+           V2 = exp(V2),
+           V3 = 2 / (1 + exp(-V3)) - 1) %>%
+    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `rho` = V3, `phi[1]` = V4, `phi[2]` = V5, `phi[3]` = V6, `gamma[1]` = V7, `gamma[2]` = V8) %>%
     gather(var, draw, -iter) %>%
-    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]',
-                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]'))) %>% 
-    filter(iter > 1000) %>%
-    ggplot() + geom_density(aes(draw)) + facet_wrap(~var, scales = 'free', ncol = 6, labeller = label_parsed) + 
+    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
+                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) %>% 
+    filter(iter > reps / 2) %>%
+    ggplot() + geom_line(aes(iter, draw)) + 
+    facet_wrap(~var, scales = 'free', labeller = label_parsed) +
+    theme_bw()
+    
+  homogDraws$draws %>%
+    as.data.frame() %>%
+    mutate(iter = seq_along(V1) * thin,
+           V1 = exp(V1), 
+           V2 = exp(V2),
+           V3 = 2 / (1 + exp(-V3)) - 1) %>%
+    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `rho` = V3, `phi[1]` = V4, `phi[2]` = V5, `phi[3]` = V6, `gamma[1]` = V7, `gamma[2]` = V8) %>%
+    gather(var, draw, -iter) %>%
+    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
+                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) %>% 
+    filter(iter > reps / 2) %>%
+    ggplot() + geom_density(aes(draw)) + facet_wrap(~var, scales = 'free', labeller = label_parsed) + 
     theme_bw() + 
     theme(axis.text.x = element_text(angle = 315, hjust = 0)) + 
     labs(x = NULL, y = NULL)
@@ -62,27 +180,29 @@ HomogenoousModel {
 # MCMC for the clustered heterogeneous model
 CHModel{
   
-reps <- 80000
-K <- 6
+reps <- 50000
+K <- 3
 thin <- 10
 burn <- 0.9
-
-### TODO: Change hyper prior and initial values to reflect new model
-
+lagsA <- 3
+lagsD <- 2
 
 draws <- list(list())
 hyper <- list()
 for(k in 1:K){
-  hyper[[k]] <- list(mean = c(-5, -5, rep(0, 4)), varInv = solve(diag(c(10, 10, 10, 10, 10, 10))), v = 6, scale = diag(1, 6))
-  draws[[1]][[k]] <- list(mean = c(-5, -5, 0, 0, 0, 0), varInv = diag(10, 6))
+  hyper[[k]] <- list(mean = c(-5, -5, rep(0, 1 + lagsA + lagsD)),
+                     varInv = solve(diag(c(10, 10, 2.5, rep(10, lagsA + lagsD)))),
+                     v = 3 + lagsA + lagsD, 
+                     scale = diag(1, 3 + lagsA + lagsD))
+  draws[[1]][[k]] <- list(mean = c(-5, -5, rep(0, 1 + lagsA + lagsD)), varInv = diag(10, 3 + lagsA + lagsD))
 }
-draw[[1]]$pi <- rep(1/K, K)
+draws[[1]]$pi <- rep(1/K, K)
 hyper$alpha <- rep(1, K)
 for(i in 1:N){
-  draws[[i+1]] <- list(theta = c(-5, -5, 0, -0.1, 0.15, 0.05), k = sample(1:K, 1), pi = rep(1/K, K))
+  draws[[i+1]] <- list(theta = c(-5, -5, rep(0, 1 + lagsA + lagsD)), k = sample(1:K, 1))
 }
   
-mixDraws <- mixtureMCMC(data, reps, draws, hyper, thin, K, 0.01)
+mixDraws <- mixtureMCMC(data, reps, draw, hyper, thin , K, lagsA, lagsD)
   
 saveRDS(mixDraws, 'mixN2000K6.RDS')
 mixDraws <- readRDS(file = 'mixN2000K6.RDS')
@@ -224,95 +344,4 @@ mixDraws <- readRDS(file = 'mixN2000K6.RDS')
   
 }
 
-# MCMC for the independent model
-# This is used for model selection
-Independent{
 
-  # Loop through VAR: TRUE / FALSE and up to six lags for both variables to
-  # 1) Fit independent MCMC for data from each vehicle for 1:(T-100)
-  # 2) Calculate posterior means for each element of theta
-  # 3) Conduct one step ahead forecasts from T-99:T
-  # 4) Calculate squared error
-  reps <- 60000
-  thin <- 10
-  var <- c(TRUE, FALSE)
-
-  # Save both the squared forecast error and posterior means.
-  error <- NULL
-  posMean <- NULL
-  for(k in 1:2){
-    for(lags in 1:6){
-      for(i in 1:N){
-        T <- nrow(data[[i]])
-        # Var = TRUE and FALSE have different parameters
-        if(var[k]){
-          vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'rho', paste0('phi[', 1:(2*lags), ']'), paste0('gamma[', 1:(2*lags), ']'))
-          draw <- c(-5, -5, rep(0, 1 + 4 * lags))
-          hyper <- list(mean = c(-5, -5, rep(0, 1 + 4 * lags)), varInv = solve(diag(c(10, 10, 2.5, rep(10, 4 * lags)))))
-        } else {
-          vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'rho', paste0('phi[', 1:lags, ']'), paste0('gamma[', 1:lags, ']'))
-          draw <- c(-5, -5, rep(0, 1 + 2 * lags))
-          hyper <- list(mean = c(-5, -5, rep(0, 1 + 2 * lags)), varInv = solve(diag(c(10, 10, 2.5, rep(10, 2 * lags)))))
-        }
-        MCMC <- as.data.frame(indepMCMC(data[[i]][1:(T-100),], reps, draw, hyper, lags = lags, thin = thin, VAR = var[k])$draws)
-        
-        # Transform the variance matrix from R^3 to sigma^2 and rho
-        colnames(MCMC) <- vars
-        MCMC %>%
-          mutate(iter = seq_along(rho) * thin) %>%
-          filter(iter > reps/2) %>%
-          mutate(`sigma[epsilon]^{2}` = exp(`sigma[epsilon]^{2}`),
-                 `sigma[eta]^{2}` = exp(`sigma[eta]^{2}`),
-                 rho = 2 / (1 + exp(-rho)) - 1) %>%
-          select(-iter) %>%
-          colMeans() -> means
-        
-        posMean <- rbind(posMean, data.frame(ID = i, 
-                                             var = vars,
-                                             mean = means,
-                                             lags = lags,
-                                             var = VAR)) 
-          
-        for(t in (T-100):(T-1)){
-          a <- 0
-          d <- 0
-          for(j in 1:lags){
-            if(var[k]){
-              a <- a  +  data[[i]][t - j, 1] * means[3 + j]  +  abs(data[[i]][t- j , 2]) * sign(data[[i]][t - j, 1]) * means[3 + lags + j]
-              d <- d  +  data[[i]][t - j, 2] * means[3 + 2 * lags + j]  +  abs(data[[i]][t- j , 1]) * sign(data[[i]][t - j, 2]) * means[3 + 3 * lags + j]
-            } else {
-              a <- a  +  data[[i]][t - j, 1] * means[3 + j] 
-              d <- d  +  data[[i]][t - j, 2] * means[3 + lags + j]
-            }
-          }
-            error <- rbind(error, data.frame(a = (a - data[[i]][t, 1])^2,
-                                             d = (d - data[[i]][t, 2])^2,
-                                             lags = lags,
-                                             var = var[k]))
-        }
-        if(i %% 10 == 0){
-          print(paste0('VAR: ', var[k], ', lags: ', lags, ', vehicle: ', i, ', time: ', Sys.time()))  
-        }
-      }
-    }
-  }
-  # Forecasts assuming a constant mean of 0, pi/2 (note: d is already delta - pi/2) and no estimated lags.
-  for(i in 1:N){
-    T <- nrow(data[[i]])
-    for(t in (T-100):(T-1)){
-      error <- rbind(error, data.frame(a = data[[i]][t, 1]^2,
-                                       d = data[[i]][t, 1+l]^2,
-                                       lags = 0,
-                                       var = c(TRUE, FALSE)))
-    }
-  }
-  # Compare each vehicles MSE under each model
-  error %>%
-    gather(variable, SE, -lags, -var) %>%
-    filter(is.finite(SE) & !is.na(SE)) %>%
-    group_by(lags, variable, var, ID) %>%
-    summarise(MSE = mean(SE)) %>% 
-    ggplot() + geom_boxplot(aes(x = factor(lags), MSE, colour = var)) + facet_wrap(~variable, scales = 'free')
-  
-
-}

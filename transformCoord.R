@@ -30,7 +30,7 @@ cars %>%
   scale_x_continuous(labels = c('Lane 1', 'Lane 2', 'Lane 3', 'Lane 4', 'Lane 5', 'Entry Lane'),
                      breaks = c(6, 18, 30, 40, 50, 65))
 
-# Initial operations on data lanes, and calculating distanct
+# Initial operations on data lanes, and calculating distance
 cars %>%
   group_by(ID) %>%
   summarise(medLane = median(lane),
@@ -176,10 +176,8 @@ carsAug %>%
 pacfData %>%
   select(ID, time, relD, relA, relV) %>%
   group_by(ID) %>%
-  mutate(time = time - min(time),
-         changeDel = relD - lag(relD)) %>%
+  mutate(time = time - min(time)) %>%
   rename(a = relA, v = relV, del = relD) %>%
-  filter(time < 15000) %>%
   ungroup() %>%
   mutate(ID = case_when(ID == plotID[1] ~ 'Vehicle 1', 
                         ID == plotID[2] ~ 'Vehicle 2',
@@ -227,14 +225,11 @@ for(i in 1:5){
   
   pacfData %>%
     filter(ID == id) %>%
-    mutate(n = seq_along(ID),
-           changeDel = relD - lag(relD)) %>%
-    filter(n > 1) %>%
-    .$changeDel %>%
+    .$changeD %>%
     pacf(plot = FALSE) %>%
     with(data.frame(lag, acf)) %>%
     mutate(ID = paste0('Vehicle ', i),
-           var = 'changeDel') -> tmp
+           var = 'changeD') -> tmp
   pacfs <- rbind(pacfs, tmp)
   
 }
