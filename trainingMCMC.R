@@ -208,139 +208,133 @@ saveRDS(mixDraws, 'mixN2000K6.RDS')
 mixDraws <- readRDS(file = 'mixN2000K6.RDS')
 
 
-### TODO: Clean up following analysis
+# Weights
+mixDraws$draws[[1]]$pi %>%
+  as.data.frame() %>%
+  mutate(iter = seq_along(V1) * thin) %>%
+  filter(iter > burn*reps) %>%
+  gather(pi, draw, -iter) %>%
+  ggplot() + geom_line(aes(iter, draw)) + 
+  facet_wrap(~pi, scales = 'free')
+
+mixDraws$draws[[1]]$pi %>%
+  as.data.frame() %>%
+  mutate(iter = seq_along(V1) * thin) %>%
+  filter(iter >  burn*reps) %>%
+  gather(pi, draw, -iter) %>%
+  ggplot() + geom_density(aes(draw)) + 
+  facet_wrap(~pi, scales = 'free')
   
-  mapGroup <- NULL
-  for(i in 1:N){
-    kDraws <- mixDraws$draws[[i+1]]$k[(burn*reps/thin+1):(reps/thin)]
-    mode <- which.max(table(c(1:K, kDraws)))
-    mapGroup <- rbind(mapGroup, data.frame(group = c(mean(kDraws), mode), 
-                                           method = c('mean', 'mode'),
-                                           ID =  idSubset[i]))
-  }
-  ggplot(mapGroup) + geom_histogram(aes(group), binwidth = 0.1) + theme_bw() + facet_wrap(~method)
+muK <- NULL
+for(i in 1:K){
+  mixDraws$draws[[1]][[i]]$mean %>%
+    as.data.frame() %>%
+    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `rho` = V3, `phi[1]` = V4, `phi[2]` = V5, `phi[3]` = V6, `gamma[1]` = V7, `gamma[2]` = V8) %>%
+    mutate(iter = seq_along(rho) * thin,
+           group = i) %>%
+    filter(iter >  burn*reps) %>%
+    rbind(muK) -> muK
+}
   
-  muK <- NULL
-  for(i in 1:K){
-    mixDraws$draws[[1]][[i]]$mean[2:(reps/thin),] %>%
-      cbind(iter = seq(2*thin, reps, thin)) %>%
-      as.data.frame() %>%
-      mutate(group = i)  -> temp
-    colnames(temp) <- c('log_sigSq_eps', 'log_sigSq_eta', 'phi1', 'phi2', 'gamma1', 'gamma2', 'iter', 'group')
-    muK <- rbind(muK, temp)
-  }
-  
-  muK %>%
-    gather(var, draw, -iter, -group) %>%
-    mutate(var = factor(var, levels = c('log_sigSq_eps', 'phi1', 'phi2', 'log_sigSq_eta', 'gamma1', 'gamma2'))) %>%
-    filter(iter > 2000 & iter %% 20 == 0 ) %>%
-    ggplot() + geom_line(aes(iter, draw)) + 
-    facet_grid(var ~ group, scales = 'free') + theme_bw() + labs(title = 'mean') -> p1
+muK %>%
+  gather(var, draw, -iter, -group) %>%
+  mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
+                                      'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) %>% 
+  ggplot() + geom_line(aes(iter, draw)) + 
+  facet_grid(var ~ group, scales = 'free') + theme_bw() + labs(title = 'mean') -> p1
   
   
-  sdK <- NULL
-  for(i in 1:K){
-    mixDraws$draws[[1]][[i]]$varInv[,,2:(reps/thin)] %>%
+sdK <- NULL
+for(i in 1:K){
+  mixDraws$draws[[1]][[i]]$varInv[,,2:(reps/thin)] %>%
       apply(3, function(x) sqrt(diag(solve(x)))) %>%
       t() %>%
       as.data.frame() %>%
-      cbind(iter = seq(2*thin, reps, thin)) %>%
-      mutate(group = i) -> temp
-    colnames(temp) <- c('log_sigSq_eps', 'log_sigSq_eta', 'phi1', 'phi2', 'gamma1', 'gamma2', 'iter', 'group')
-    sdK <- rbind(sdK, temp)
-  }
+    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `rho` = V3, `phi[1]` = V4, `phi[2]` = V5, `phi[3]` = V6, `gamma[1]` = V7, `gamma[2]` = V8) %>%
+    mutate(iter = seq_along(rho) * thin,
+           group = i) %>%
+    filter(iter > burn * reps) %>%
+    rbind(sdK) -> sdK
+}
   
-  sdK %>%
+sdK %>%
     gather(var, draw, -iter, -group) %>%
-    mutate(var = factor(var, levels = c('log_sigSq_eps', 'phi1', 'phi2', 'log_sigSq_eta', 'gamma1', 'gamma2'))) %>%
-    filter(iter > 2000 & iter %% 20 == 0 ) %>%
+    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
+                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) %>% 
     ggplot() + geom_line(aes(iter, draw)) + 
     facet_grid(var ~ group, scales = 'free') + theme_bw() + labs(title = 'standard deviation') -> p2
   
-  gridExtra::grid.arrange(p1, p2, ncol = 2)
+gridExtra::grid.arrange(p1, p2, ncol = 2)
   
-  for(i in 1:K){
-    mixDraws$draws[[1]][[i]]$varInv[,,(reps/(2*thin)+1):(reps/thin)] %>% 
-      apply(3, function(x) cov2cor(solve(x))) %>%
-      t() %>%
-      colMeans() %>%
-      matrix(6) -> mat
-    colnames(mat) <- c('log_sigSq_eps', 'log_sigSq_eta', 'phi1', 'phi2', 'gamma1', 'gamma2')
-    rownames(mat) <- c('log_sigSq_eps', 'log_sigSq_eta', 'phi1', 'phi2', 'gamma1', 'gamma2') 
-    corrplot::corrplot(mat) 
+densities <- NULL
+support <- data.frame(seq(exp(-13), exp(-6.5), length.out = 1000),
+                      seq(exp(-15), exp(-7.5), length.out = 1000),
+                      seq(-1, 1, length.out = 1000),
+                      seq(-2, 2, length.out = 1000),
+                      seq(-2, 2, length.out = 1000),
+                      seq(-2, 2, length.out = 1000),
+                      seq(-2, 2, length.out = 1000),
+                      seq(-2, 2, length.out = 1000))
+vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'rho', 'phi[1]', 'phi[2]', 'phi[3]', 'gamma[1]', 'gamma[2]') 
+index <- (reps/thin+1):(reps/thin)
+
+rhoDens <- function(x, mu, sd){
+  abs(1 / (1 + x) + 1 / ( 1- x)) * dnorm(log((x+1)/(1-x)), mu, sd)
+}
+
+for(k in 1:K){
+  mat <- matrix(0, 1000, 8)
+  for(i in seq_along(index)){
+    meanvec <- mixDraws$draws[[1]][[k]]$mean[index[i],]
+    sdvec <- sqrt(diag(solve(mixDraws$draws[[1]][[k]]$varInv[,,index[i]])))
+    w <- mixDraws$draws[[1]]$pi[index[i], k]
+    for(j in 1:2){
+      mat[,j] <- mat[,j] + w * dlnorm(support[,j], meanvec[j], sdvec[j]) / length(index) 
+    } 
+    mat[, 3] <- mat[, 3] + w * rhoDens(support[,3], meanvec[3], sdvec[3]) / length(index)
+    for(j in 4:8){
+      mat[,j] <- mat[,j] + w * dnorm(support[,j], meanvec[j], sdvec[j]) / length(index) 
+    }
   }
+  densities <- rbind(densities,
+                     data.frame(dens = c(mat),
+                                support = unlist(c(support)),
+                                var = rep(vars, rep(1000, 8)),
+                                group = k))
+}
+densities %>%
+  mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
+                                 'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) -> densities
+densities %>% 
+  group_by(var, support) %>%
+  summarise(dens = sum(dens)) -> densMixMod
   
-  densities <- NULL
-  support <- data.frame(seq(exp(-13), exp(-4.5), length.out = 1000),
-                        seq(exp(-15), exp(-7.6), length.out = 1000),
-                        seq(-0.5, 2, length.out = 1000),
-                        seq(-1, 0.8, length.out = 1000),
-                        seq(0, 2, length.out = 1000),
-                        seq(-1, 0.5, length.out = 1000))
-  vars <- c('sigma[epsilon]^{2}', 'sigma[eta]^{2}', 'phi[1]', 'phi[2]', 'gamma[1]', 'gamma[2]') 
-  index <- (burn*reps/thin+1):(reps/thin)
+ggplot(densMixMod) + geom_line(aes(support, dens)) +
+  geom_line(data=densities, aes(support, dens, colour = factor(group))) +
+  facet_wrap(~var, scales = 'free', ncol = 6, labeller = label_parsed) + 
+  labs(x = NULL, y = NULL) + 
+  theme_bw() + 
+  theme(legend.position = 'none', axis.text.x = element_text(angle = 45, hjust = 1))
+
+means <- rep(0, K*8)
+varinv <- matrix(0, K*8, 8)
+linv <- matrix(0, K*8, 8)
+pi <- rep(0, K)
+for(i in seq_along(index)){
   for(k in 1:K){
-    mat <- matrix(0, 1000, 6)
-    for(i in seq_along(index)){
-      meanvec <- mixDraws$draws[[1]][[k]]$mean[i,]
-      sdvec <- sqrt(diag(solve(mixDraws$draws[[1]][[k]]$varInv[,,i])))
-      w <- 0
-      for(j in 1:N){
-        w <- w + mixDraws$draws[[j+1]]$pi[i, k] / N
-      }
-      for(j in 1:2){
-        mat[,j] <- mat[,j] + w * dlnorm(support[,j], meanvec[j], sdvec[j]) / length(index) 
-      } 
-      for(j in 3:6){
-        mat[,j] <- mat[,j] + w * dnorm(support[,j], meanvec[j], sdvec[j]) / length(index) 
-      }
-    }
-    densities <- rbind(densities,
-                       data.frame(dens = c(mat),
-                                  support = unlist(c(support)),
-                                  var = rep(vars, rep(1000, 6)),
-                                  group = k))
+    means[(k-1)*8 + 1:8] <- means[(k-1)*8 + 1:8] + mixDraws$draws[[1]][[k]]$mean[index[i],] / length(index)
+    uinv <- chol(mixDraws$draws[[1]][[k]]$varInv[,,index[i]])
+    linv[(k-1)*8 + 1:8,] <- linv[(k-1)*8 + 1:8,] + t(uinv) / length(index)
+    varinv[(k-1)*8 + 1:8,] <- varinv[(k-1)*8 + 1:8,] + uinv %*% t(uinv) / length(index)
+    pi[k] <- pi[k] + mixDraws$draws[[1]]$pi[index[i],k] / length(index)
   }
-  
-  densities %>%
-    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]',
-                                 'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]'))) -> densities
-  densities %>% 
-    group_by(var, support) %>%
-    summarise(dens = sum(dens)) -> densMixMod
-  
-  densMixMod %>%
-    ggplot(densMixMod) + geom_line(aes(support, dens)) +
-    geom_line(data=densities, aes(support, dens, colour = factor(group))) +
-    facet_wrap(~var, scales = 'free', ncol = 6, labeller = label_parsed) + 
-    labs(x = NULL, y = NULL) + 
-    theme_bw() + 
-    theme(legend.position = 'none', axis.text.x = element_text(angle = 45, hjust = 1))  -> p1
-  
-  
-  ###TODO: Clean this for new model - estimation of prior
-  
-  means <- rep(0, 6*6)
-  varinv <- matrix(0, 6*6, 6)
-  linv <- matrix(0, 6*6, 6)
-  pi <- rep(0, 6)
-  for(i in 4001:8000){
-    for(k in 1:6){
-      means[(k-1)*6 + 1:6] <- means[(k-1)*6 + 1:6] + mixDraws$draws[[1]][[k]]$mean[i,] / 4000
-      uinv <- chol(mixDraws$draws[[1]][[k]]$varInv[,,i])
-      linv[(k-1)*6 + 1:6,] <- linv[(k-1)*6 + 1:6,] + uinv / 4000
-      varinv[(k-1)*6 + 1:6,] <- varinv[(k-1)*6 + 1:6,] + t(uinv) %*% uinv / 4000
-      for(n in 1:2000){
-        pi[k] <- pi[k] + mixDraws$draws[[1+n]]$pi[i, k] / (2000 * 4000)
-      }
-    }
-  }
-  dets <- numeric(6)
-  for(k in 1:6){
-    dets[k] <- det(linv[(k-1)*6 + 1:6, ])  
-  }
-  priorMix <- list(mean = means, linv = linv, varInv = varinv, dets = dets, weights = pi)
-  startingLam <- c(means, rep(c(diag(0.5, 6)), 6), rep(1, 6))
+}
+dets <- numeric(K)
+for(k in 1:K){
+  dets[k] <- det(linv[(k-1)*8 + 1:8, ])  
+}
+priorMix <- list(mean = means, linv = linv, varInv = varinv, dets = dets, weights = pi)
+startingLam <- c(means, rep(c(diag(0.5, 8)), K), rep(1, K))
   
 }
 
