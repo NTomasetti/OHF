@@ -294,7 +294,7 @@ indepMCMC <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags =
 
 # The above (for the VAR model only) but non variance components are drawn with gibbs from their posterior conditionals
 # There is most likely a mistake somewhere in the code. Use the MH version instead.
-indepMCMCgibbsVAR <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 2){
+indepMCMCgibbsVAR<- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lags = 2){
   # set up likelihood function and theta dimension
   dim <- 3 + 4 * lags
   accept <- 0
