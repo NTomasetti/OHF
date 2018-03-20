@@ -1,6 +1,7 @@
 library(mvtnorm)
 library(Rcpp)
 library(RcppArmadillo)
+library(MCMCpack)
 sourceCpp('MCMCFuns.cpp')
 
 # An MCMC algorithn for the clustered hierarchical model with a K component gaussian prior distribution
@@ -74,7 +75,7 @@ mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, lagsA = 1, lag
     for(j in 1:N){
       group[draw[[j+1]]$k] <- group[draw[[j+1]]$k] +  1
     }
-    draw[[1]]$pi <- c(MCMCpack::rdirichlet(1, hyper$alpha + group))
+    draw[[1]]$pi <- c(rdirichlet(1, hyper$alpha + group))
     # thetaHat_k
     sumK <- rep(0, K)
     sumTheta <- matrix(0, dim, K)

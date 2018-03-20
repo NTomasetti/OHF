@@ -157,15 +157,16 @@ struct SPSA {
   const vec epsilon;
   const vec mean;
   const mat Linv;
-  const int lags;
-  SPSA(const mat& dataIn, const vec& epsIn, const vec& meanIn, const mat& LinvIn, const int& lagsIn) :
-    data(dataIn), epsilon(epsIn), mean(meanIn), Linv(LinvIn), lags(lagsIn) {}
+  const int lagsA;
+  const int lagsD;
+  SPSA(const mat& dataIn, const vec& epsIn, const vec& meanIn, const mat& LinvIn, const int& lagsAIn, const int& lagsDIn) :
+    data(dataIn), epsilon(epsIn), mean(meanIn), Linv(LinvIn), lagsA(lagsAIn), lagsD(lagsDIn) {}
   template <typename T> //
   T operator ()(const Matrix<T, Dynamic, 1>& lambda)
     const{
-    using std::log; using std::exp; using std::pow; using std::sqrt; using std::fabs;
+    using std::log; using std::exp; using std::pow; using std::sqrt; using std::fabs; using std::max;
     int N = data.n_rows;
-    int dim = 2 + 2 * lags;
+    int dim = 2 + lagsA + lagsD;
     // Create theta as Mu + U %*% Eps
     Matrix<T, Dynamic, 1> theta(dim);
     for(int i = 0; i < dim; ++i){
@@ -195,13 +196,17 @@ struct SPSA {
     // Evaluate log likelihood
     T logLik = 0;
     Matrix<T, Dynamic, Dynamic> loglikKernel(N, 2);
+    int lags = max(lagsA, lagsD);
     for(int t = lags; t < N; ++t){
       loglikKernel(t, 0) = data(t, 0);
       loglikKernel(t, 1) = data(t, 1);
-      for(int i = 1; i <= lags; ++i){
+      for(int i = 1; i <= lagsA; ++i){
         loglikKernel(t, 0) -= data(t-i, 0) * theta(1 + i);
-        loglikKernel(t, 1) -= data(t-i, 1) * theta(1 + lags + i);
       }
+      for(int i = 1; i <= lagsD; ++i){
+        loglikKernel(t, 1) -= data(t-i, 1) * theta(1 + lagsA + i);
+      }
+      
       logLik += - 0.5 * theta(0) - 0.5 * theta(1) - 
         pow(loglikKernel(t, 0), 2) / (2 * sigSqV) -
         pow(loglikKernel(t, 1), 2) / (2 * sigSqD);
@@ -211,12 +216,13 @@ struct SPSA {
 };
 
 // [[Rcpp::export]]
-Rcpp::List singlePriorSingleApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec epsilon, vec mean, mat Linv, int lags){
+Rcpp::List singlePriorSingleApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec epsilon, vec mean, mat Linv, int lagsA = 1, int lagsD = 1){
   Map<MatrixXd> lambda(Rcpp::as<Map<MatrixXd> >(lambdaIn));
   double eval;
-  Matrix<double, Dynamic, 1>  grad(6 + 10 * lags + 4 * lags * lags);
+  int dim = lambda.rows();
+  Matrix<double, Dynamic, 1>  grad(dim);
   // Autodiff
-  SPSA p(data, epsilon, mean, Linv, lags);
+  SPSA p(data, epsilon, mean, Linv, lagsA, lagsD);
   stan::math::set_zero_all_adjoints();
   stan::math::gradient(p, lambda, eval, grad);
   
@@ -229,19 +235,21 @@ Rcpp::List singlePriorSingleApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec e
 struct MPSA {
   const mat data;
   const vec epsilon;
-  const vec mean;
-  const cube sigInv;
+  const mat mean;
+  const cube Linv;
   const vec dets;
   const vec weights;
-  const int lags;
-  MPSA(const mat& dataIn, const vec& epsIn, const vec& meanIn, const cube& sigInvIn, const vec& detsIn, const vec& weightsIn, const int& lagsIn) :
-    data(dataIn), epsilon(epsIn), mean(meanIn), sigInv(sigInvIn), dets(detsIn), weights(weightsIn), lags(lagsIn) {}
+  const int lagsA;
+  const int lagsD;
+  MPSA(const mat& dataIn, const vec& epsIn, const mat& meanIn, const cube& LinvIn, const vec& detsIn, const vec& weightsIn, const int& lagsAIn, const int& lagsDIn) :
+    data(dataIn), epsilon(epsIn), mean(meanIn), Linv(LinvIn), dets(detsIn), weights(weightsIn), lagsA(lagsAIn), lagsD(lagsDIn) {}
   template <typename T> //
   T operator ()(const Matrix<T, Dynamic, 1>& lambda)
     const{
-    using std::log; using std::exp; using std::pow; using std::sqrt; using std::fabs;
+    using std::log; using std::exp; using std::pow; using std::sqrt; using std::fabs; using std::max;
     int N = data.n_rows;
-    int dim = 2 + 2 * lags;
+    int dim = 2 + lagsA + lagsD;
+    int mix = weights.n_rows;
     // Create theta as Mu + U %*% Eps
     Matrix<T, Dynamic, 1> theta(dim);
     for(int i = 0; i < dim; ++i){
@@ -255,8 +263,18 @@ struct MPSA {
     
     // Evaluate log(p(theta))
     T prior = 0;
-    for(int k = 0; k < 6; ++k){
-      prior += weights(k) * pow(6.283185, -3) * dets(k) * exp(-0.5 * as_scalar((theta - mean.col(k)).t() * sigInv.slice(k) * (theta - mean.col(k))));
+    Matrix<T, Dynamic, Dynamic> kernel(dim, mix);
+    kernel.fill(0);
+    Matrix<T, Dynamic, 1> exponents(mix);
+    exponents.fill(0);
+    for(int k = 0; k < mix; ++k){
+      for(int i = 0; i < dim; ++i){
+        for(int j = 0; j <= i; ++j){
+          kernel(i, k) += (theta(j) - mean(j, k)) * Linv(i, j, k);
+        }
+        exponents(k) += -0.5 * pow(kernel(i, k), 2);
+      }
+      prior += weights(k) * pow(6.283185, -3) * dets(k) * exp(exponents(k));
     }
     prior = log(prior);
     
@@ -268,13 +286,17 @@ struct MPSA {
     // Evaluate log likelihood
     T logLik = 0;
     Matrix<T, Dynamic, Dynamic> loglikKernel(N, 2);
+    int lags = max(lagsA, lagsD);
     for(int t = lags; t < N; ++t){
       loglikKernel(t, 0) = data(t, 0);
       loglikKernel(t, 1) = data(t, 1);
-      for(int i = 1; i <= lags; ++i){
+      for(int i = 1; i <= lagsA; ++i){
         loglikKernel(t, 0) -= data(t-i, 0) * theta(1 + i);
-        loglikKernel(t, 1) -= data(t-i, 1) * theta(1 + lags + i);
       }
+      for(int i = 1; i <= lagsD; ++i){
+        loglikKernel(t, 1) -= data(t-i, 1) * theta(1 + lagsA + i);
+      }
+      
       logLik += - 0.5 * theta(0) - 0.5 * theta(1) - 
         pow(loglikKernel(t, 0), 2) / (2 * sigSqV) -
         pow(loglikKernel(t, 1), 2) / (2 * sigSqD);
@@ -284,12 +306,13 @@ struct MPSA {
 };
 
 // [[Rcpp::export]]
-Rcpp::List mixPriorSingleApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec epsilon, vec mean, cube sigInv, vec dets, vec weights, int lags){
+Rcpp::List mixPriorSingleApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec epsilon, mat mean, cube Linv, vec dets, vec weights, int lagsA = 1, int lagsD = 1){
   Map<MatrixXd> lambda(Rcpp::as<Map<MatrixXd> >(lambdaIn));
   double eval;
-  Matrix<double, Dynamic, 1>  grad(6 + 10 * lags + 4 * lags * lags);
+  int dim = lambda.rows();
+  Matrix<double, Dynamic, 1>  grad(dim);
   // Autodiff
-  MPSA p(data, epsilon, mean, sigInv, dets, weights, lags);
+  MPSA p(data, epsilon, mean, Linv, dets, weights, lagsA, lagsD);
   stan::math::set_zero_all_adjoints();
   stan::math::gradient(p, lambda, eval, grad);
   
@@ -301,41 +324,44 @@ Rcpp::List mixPriorSingleApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec epsi
 
 struct mixQlogdens {
   const vec theta;
-  mixQlogdens(const vec& thetaIn) :
-    theta(thetaIn) {}
+  const int mix;
+  mixQlogdens(const vec& thetaIn, const int& mixIn) :
+    theta(thetaIn), mix(mixIn) {}
   template <typename T> //
   T operator ()(const Matrix<T, Dynamic, 1>& lambda)
     const{
     using std::log; using std::exp; using std::pow; using std::sqrt;
     
-    Matrix<T, Dynamic, 1> dets(6);
-    for(int k = 0; k < 6; ++k){
-      dets(k) = exp(lambda(6*k + 36));
-      for(int i = 1; i < 6; ++i){
-        dets(k) *= exp(lambda(36 + 6*k + i));
+    int dim = theta.n_rows;
+
+    Matrix<T, Dynamic, 1> dets(mix);
+    for(int k = 0; k < mix; ++k){
+      dets(k) = exp(lambda(dim*k + dim*mix));
+      for(int i = 1; i < dim; ++i){
+        dets(k) *= exp(lambda(dim*mix + dim*k + i));
       }
       dets(k) = 1.0 / dets(k);
     }
     
-    Matrix<T, Dynamic, 1> kernel(6);
+    Matrix<T, Dynamic, 1> kernel(mix);
     kernel.fill(0);
     
-    for(int k = 0; k < 6; ++k){
-      for(int i = 0; i < 6; ++i){
-        kernel(k) += pow((theta(i) - lambda(k*6 + i)) / exp(lambda(36 + 6*k + i)), 2);
+    for(int k = 0; k < mix; ++k){
+      for(int i = 0; i < dim; ++i){
+        kernel(k) += pow((theta(i) - lambda(k*dim + i)) / exp(lambda(dim*mix + dim*k + i)), 2);
       }
     }
     
-    Matrix<T, Dynamic, 1> pi(6);
+    Matrix<T, Dynamic, 1> pi(mix);
     T sumExpZ = 0;
-    for(int k = 0; k < 6; ++k){
-      pi(k) = exp(lambda(72 + k));
+    for(int k = 0; k < mix; ++k){
+      pi(k) = exp(lambda(2*dim*mix + k));
       sumExpZ += pi(k);
     }
     pi /= sumExpZ;
     
     T density = 0;
-    for(int k = 0; k < 6; ++k){
+    for(int k = 0; k < mix; ++k){
       density += pi(k) * dets(k) * pow(6.283185, -3) *  exp(-0.5 * kernel(k));
     }
     
@@ -343,29 +369,40 @@ struct mixQlogdens {
   }
 };
 
-double pLogDensMix(mat data, vec theta, mat mean, cube SigInv, vec dets, vec weights){
+double pLogDensMix(mat data, vec theta, mat mean, cube SigInv, vec dets, vec weights, int lagsA, int lagsD){
   int N = data.n_rows;
+  int mix = weights.n_rows;
   // Constrained Positive
-  double sigSqV = exp(theta(0)), sigSqD = exp(theta(1));
+  double sigSqV = std::exp(theta(0)), sigSqD = std::exp(theta(1));
   // Evaluate log(p(theta)), start by evaluative the quadratic in the MVN exponents
   double prior = 0;
-  for(int k = 0; k < 6; ++k){
+  for(int k = 0; k < mix; ++k){
     prior += weights(k) * pow(6.283185, -3) * dets(k) * exp(-0.5 * as_scalar((theta - mean.col(k)).t() * SigInv.slice(k) * (theta - mean.col(k))));
   }
   
   // Evaluate log likelihood
   double logLik = 0;
-  for(int t = 2; t < N; ++t){
-    logLik += - 0.5 * (theta(0) + theta(1)) - pow(data(t, 0) - theta(2) * data(t-1, 0) - theta(3) * data(t-2, 0), 2) / (2 * sigSqV) -
-      pow(data(t, 1) - theta(4) * data(t-1, 1) - theta(5) * data(t-2, 1), 2) / (2 * sigSqD);
+  int lags = std::max(lagsA, lagsD);
+  for(int t = lags; t < N; ++t){
+    double kernelA = data(t, 0);
+    double kernelD = data(t, 1);
+    for(int i = 1; i <= lagsA; ++i){
+      kernelA -= data(t-i, 0) * theta(1 + i);
+    }
+    for(int i = 1; i <= lagsD; ++i){
+      kernelD -= data(t-i, 1) * theta(1 + lagsA + i);
+    }
+    logLik += - 0.5 * (theta(0) + theta(1)) -
+      std::pow(kernelA, 2) / (2 * sigSqV) - 
+      std::pow(kernelD, 2) / (2 * sigSqD);
   }
-  return log(prior) + logLik;
+  return std::log(prior) + logLik;
 }
 
-double pLogDensSingle(mat data, vec theta, vec mean, mat Linv){
+double pLogDensSingle(mat data, vec theta, vec mean, mat Linv, int lagsA, int lagsD){
   int N = data.n_rows;
   // Constrained Positive
-  double sigSqV = exp(theta(0)), sigSqD = exp(theta(1));
+  double sigSqV = std::exp(theta(0)), sigSqD = std::exp(theta(1));
   // Evaluate log(p(theta)), start by evaluative the quadratic in the MVN exponents
   
   // Evaluate log(p(theta))
@@ -374,26 +411,38 @@ double pLogDensSingle(mat data, vec theta, vec mean, mat Linv){
   prior = - 0.5 * as_scalar((theta - mean).t() * sigInv * (theta - mean));
   
   // Evaluate log likelihood
+  // Evaluate log likelihood
   double logLik = 0;
-  for(int t = 2; t < N; ++t){
-    logLik += - 0.5 * (theta(0) + theta(1)) - pow(data(t, 0) - theta(2) * data(t-1, 0) - theta(3) * data(t-2, 0), 2) / (2 * sigSqV) -
-      pow(data(t, 1) - theta(4) * data(t-1, 1) - theta(5) * data(t-2, 1), 2) / (2 * sigSqD);
+  int lags = std::max(lagsA, lagsD);
+  for(int t = lags; t < N; ++t){
+    double kernelA = data(t, 0);
+    double kernelD = data(t, 1);
+    for(int i = 1; i <= lagsA; ++i){
+      kernelA -= data(t-i, 0) * theta(1 + i);
+    }
+    for(int i = 1; i <= lagsD; ++i){
+      kernelD -= data(t-i, 1) * theta(1 + lagsA + i);
+    }
+    logLik += - 0.5 * (theta(0) + theta(1)) -
+      std::pow(kernelA, 2) / (2 * sigSqV) - 
+      std::pow(kernelD, 2) / (2 * sigSqD);
   }
   return prior + logLik;
 }
 
 // These models are parameterised by the mean and log standard deviations
 // [[Rcpp::export]]
-Rcpp::List mixPriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec theta, mat mean, cube SigInv, vec dets, vec weights){
+Rcpp::List singlePriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec theta, vec mean, mat Linv, int lagsA = 1, int lagsD = 1, int mix = 6){
   Map<MatrixXd> lambda(Rcpp::as<Map<MatrixXd> >(lambdaIn));
   double qEval;
-  Matrix<double, Dynamic, 1> grad(13*6);
+  int dim = lambda.rows();
+  Matrix<double, Dynamic, 1> grad(dim);
   
-  mixQlogdens logQ(theta);
+  mixQlogdens logQ(theta, mix);
   stan::math::set_zero_all_adjoints();
   stan::math::gradient(logQ, lambda, qEval, grad);
   
-  double logp = pLogDensMix(data, theta, mean, SigInv, dets, weights);
+  double logp = pLogDensSingle(data, theta, mean, Linv, lagsA, lagsD);
   double elbo = logp - qEval;
   
   for(int i = 0; i < 13*6; ++i){
@@ -404,19 +453,21 @@ Rcpp::List mixPriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec theta, 
 }
 
 // [[Rcpp::export]]
-Rcpp::List singlePriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec theta, vec mean, mat Linv){
+Rcpp::List mixPriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec theta, mat mean, cube SigInv, vec dets, vec weights, int lagsA = 1, int lagsD = 1){
   Map<MatrixXd> lambda(Rcpp::as<Map<MatrixXd> >(lambdaIn));
   double qEval;
-  Matrix<double, Dynamic, 1> grad(13*6);
+  int dim = lambda.rows();
+  int mix = weights.n_rows;
+  Matrix<double, Dynamic, 1> grad(dim);
   
-  mixQlogdens logQ(theta);
+  mixQlogdens logQ(theta, mix);
   stan::math::set_zero_all_adjoints();
   stan::math::gradient(logQ, lambda, qEval, grad);
   
-  double logp = pLogDensSingle(data, theta, mean, SigInv, dets, weights);
+  double logp = pLogDensMix(data, theta, mean, SigInv, dets, weights, lagsA, lagsD);
   double elbo = logp - qEval;
   
-  for(int i = 0; i < 13*6; ++i){
+  for(int i = 0; i < dim; ++i){
     grad(i) *= elbo;
   }
   return Rcpp::List::create(Rcpp::Named("grad") = grad,
@@ -426,17 +477,21 @@ Rcpp::List singlePriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec thet
 // MCMC MH density calculation
 
 // [[Rcpp::export]]
-double nlogDensity (mat data, vec theta, vec mu, mat varInv, int lags = 1){
+double nlogDensity (mat data, vec theta, vec mu, mat varInv, int lagsA = 1, int lagsD = 1){
+  using namespace std;
   int T = data.n_rows;
   double dens = 0.5 * log(det(varInv)) - 0.5 * as_scalar((theta - mu).t() * varInv * (theta - mu));
   double rho = 2 / (1 + exp(-theta(2))) - 1;
   
+  int lags = max(lagsA, lagsD);
   for(int t = lags; t < T; ++t){
     
     double meanA = 0, meanD = 0;
-    for(int i = 1; i <= lags; ++i){
+    for(int i = 1; i <= lagsA; ++i){
       meanA += theta(2 + i) * data(t-i, 0);
-      meanD += theta(2 + lags + i) * data(t - i, 1);
+    }
+    for(int i = 1; i < lagsD; ++i){
+      meanD += theta(2 + lagsA + i) * data(t - i, 1);
     }
     double z = pow(data(t, 0) - meanA, 2) / exp(theta(0))  +  pow(data(t, 1) - meanD, 2) / exp(theta(1))  -
       2 * rho * (data(t, 0) - meanA) * (data(t, 1) - meanD) / (sqrt(exp(theta(0))) * sqrt(exp(theta(1))));
@@ -447,22 +502,26 @@ double nlogDensity (mat data, vec theta, vec mu, mat varInv, int lags = 1){
 }
 
 // [[Rcpp::export]]
-double nMixLogDens (mat data, vec theta, vec mu, mat varInv, vec weights, int lags = 1){
+double nMixLogDens (mat data, vec theta, vec mu, mat varInv, vec weights, int lagsA = 1, int lagsD = 1){
+  using namespace std;
   int T = data.n_rows;
-  int K = weights.n_elem;
+  int dim = 3 + lagsA + lagsD;
+  int mix = weights.n_elem;
   double dens = 0;
   for(int k = 0; k < K; ++k){
-    vec submean = mu.subvec(k*6, (k+1)*6-1);
-    mat subinv = varInv.rows(k*6, (k+1)*6-1);
-    dens += weights(k) * std::sqrt(det(subinv)) * std::exp(-0.5 * as_scalar((theta - submean).t() * subinv * (theta - submean)));
+    vec submean = mu.subvec(k*dim, (k+1)*dim-1);
+    mat subinv = varInv.rows(k*dim, (k+1)*dim-1);
+    dens += weights(k) * sqrt(det(subinv)) * exp(-0.5 * as_scalar((theta - submean).t() * subinv * (theta - submean)));
   }
   dens = std::log(dens);
+  int lags = max(lagsA, lagsD);
   for(int t = lags; t < T; ++t){
-    
     double meanA = 0, meanD = 0;
-    for(int i = 1; i <= lags; ++i){
+    for(int i = 1; i <= lagsA; ++i){
       meanA += theta(2 + i) * data(t-i, 0);
-      meanD += theta(2 + lags + i) * data(t - i, 1);
+    }
+    for(int i = 1; i < lagsD; ++i){
+      meanD += theta(2 + lagsA + i) * data(t - i, 1);
     }
     double z = pow(data(t, 0) - meanA, 2) / exp(theta(0))  +  pow(data(t, 1) - meanD, 2) / exp(theta(1))  -
       2 * rho * (data(t, 0) - meanA) * (data(t, 1) - meanD) / (sqrt(exp(theta(0))) * sqrt(exp(theta(1))));
@@ -473,46 +532,6 @@ double nMixLogDens (mat data, vec theta, vec mu, mat varInv, vec weights, int la
 }
 
 // Forecast density evaluation
-
-// [[Rcpp::export]]
-cube evalMCMCDens (mat data, int N, int H, mat grid, mat MCMCdraws){
-  cube densities (N, N, H, fill::zeros);
-  boost::math::normal_distribution<> Zdist(0, 1);
-  
-  for(int m = 0; m < 1000; ++m){
-    double afc1 = data(1, 0), afc2 = data(0, 0), dfc1 = data(1, 1), dfc2 = data(0, 1), afc, dfc, vfc;
-    vec draws = MCMCdraws.row(1000 + 4 * m).t();
-    double sigV = std::sqrt(std::exp(draws(0)));
-    double sigD = std::sqrt(std::exp(draws(1)));
-    for(int h = 0; h < H; ++h){
-      afc = afc1 * draws(2) + afc2 * draws(3);
-      dfc = dfc1 * draws(4) + dfc2 * draws(5);
-      vfc = afc + data(2 + h, 2);
-      // Iterate densities over the grid
-      for(int i = 0; i < N; ++i){
-        for(int j = 0; j < N; ++j){
-          // Transform delta x / delta y to velocity and angle
-          double v = std::sqrt(
-            std::pow(grid(i*N + j, 0), 2) +
-              std::pow(grid(i*N + j, 1), 2)
-          );
-          double del = std::atan2(
-            grid(i*N + j, 1),
-            grid(i*N + j, 0)
-          ) - 1.570796;
-          // p(x, y) = p(v) * p(d) / sqrt(dx^2 + dy^2)
-          densities(i, j, h) += (pdf(Zdist, (v - vfc) / sigV) / sigV) *
-            (pdf(Zdist, (del - dfc) / sigD) / sigD) / (v * 1000);
-        }
-      }
-      afc2 = afc1;
-      afc1 = afc;
-      dfc2 = dfc1;
-      dfc1 = dfc;
-    }
-  }
-  return densities;
-}
 
 // [[Rcpp::export]]
 cube evalVBDens (mat data, vec mean, mat L, vec weights, int N, int H, mat grid, bool mix){
@@ -620,6 +639,46 @@ cube evalVBDensIndep (mat data, vec mean, mat L, vec weights, int N, int H, mat 
     }
   }
   return densities;    
+}
+
+// [[Rcpp::export]]
+cube evalMCMCDens (mat data, int N, int H, mat grid, mat MCMCdraws){
+  cube densities (N, N, H, fill::zeros);
+  boost::math::normal_distribution<> Zdist(0, 1);
+  
+  for(int m = 0; m < 1000; ++m){
+    double afc1 = data(1, 0), afc2 = data(0, 0), dfc1 = data(1, 1), dfc2 = data(0, 1), afc, dfc, vfc;
+    vec draws = MCMCdraws.row(1000 + 4 * m).t();
+    double sigV = std::sqrt(std::exp(draws(0)));
+    double sigD = std::sqrt(std::exp(draws(1)));
+    for(int h = 0; h < H; ++h){
+      afc = afc1 * draws(2) + afc2 * draws(3);
+      dfc = dfc1 * draws(4) + dfc2 * draws(5);
+      vfc = afc + data(2 + h, 2);
+      // Iterate densities over the grid
+      for(int i = 0; i < N; ++i){
+        for(int j = 0; j < N; ++j){
+          // Transform delta x / delta y to velocity and angle
+          double v = std::sqrt(
+            std::pow(grid(i*N + j, 0), 2) +
+              std::pow(grid(i*N + j, 1), 2)
+          );
+          double del = std::atan2(
+            grid(i*N + j, 1),
+            grid(i*N + j, 0)
+          ) - 1.570796;
+          // p(x, y) = p(v) * p(d) / sqrt(dx^2 + dy^2)
+          densities(i, j, h) += (pdf(Zdist, (v - vfc) / sigV) / sigV) *
+            (pdf(Zdist, (del - dfc) / sigD) / sigD) / (v * 1000);
+        }
+      }
+      afc2 = afc1;
+      afc1 = afc;
+      dfc2 = dfc1;
+      dfc1 = dfc;
+    }
+  }
+  return densities;
 }
 
 // [[Rcpp::export]]

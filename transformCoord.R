@@ -238,3 +238,25 @@ ggplot(pacfs) + geom_bar(aes(lag, acf), stat = 'identity') +
   facet_grid(var~ID) + labs(x = 'Lag', y = 'Partial Autocorrelation') + 
   theme_bw()
 
+# Calculate average distance between lanes for lane change prediction
+
+d <- seq(min(cars$dist), max(cars$dist), length.out = 1000000)
+centrePath <- matrix(d, ncol = 1)
+for(i in 1:5){
+  cars %>%
+    filter(lane == i  & ID %in% splinesID) -> carSubset
+  modX <- smooth.spline(carSubset$dist, carSubset$x, df = degree)
+  modY <- smooth.spline(carSubset$dist, carSubset$y, df = degree)
+  centrePath <- cbind(centrePath, predict(modX, d)$y)
+  centrePath <- cbind(centrePath, predict(modY, d)$y)
+}
+centrePath <- as.data.frame(centrePath)
+colnames(centrePath) <- c('d', 'x1', 'y1', 'x2', 'y2', 'x3', 'y3', 'x4', 'y4', 'x5', 'y5')
+
+centrePath <- mutate(centrePath,
+                     g1 = sqrt((x1 - x2)^2 + (y1 - y2)^2),
+                     g2 = sqrt((x2 - x3)^2 + (y2 - y3)^2),
+                     g3 = sqrt((x3 - x4)^2 + (y3 - y4)^2),
+                     g4 = sqrt((x4 - x5)^2 + (y4 - y5)^2))
+laneSize <- mean(unlist(select(centrePath, g1, g2, g3, g4))) * mPerFoot
+

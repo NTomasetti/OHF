@@ -11,7 +11,7 @@ colnames(carsAug) <- c('ID', 'x', 'a', 'y', 'v', 'delta')
 
 # Select training vehicles from the vehicles that did not stop.
 set.seed(1)
-N <- 100
+N <- 500
 carsAug %>%
   group_by(ID) %>%
   filter(min(relV) > 0) %>%
@@ -23,7 +23,6 @@ idSubset <- sample(ids, N)
 data <- list()
 for(i in 1:N){
   carsAug %>%
-    ungroup() %>%
     filter(ID == idSubset[i]) %>%
     mutate(d = relD - pi/2) %>% 
     select(relA , d) %>%
@@ -204,8 +203,8 @@ for(i in 1:N){
   
 mixDraws <- mixtureMCMC(data, reps, draw, hyper, thin , K, lagsA, lagsD)
   
-saveRDS(mixDraws, 'mixN2000K6.RDS')
-mixDraws <- readRDS(file = 'mixN2000K6.RDS')
+saveRDS(mixDraws, paste0('mixN', N, 'K', K, '.RDS'))
+mixDraws <- readRDS(file = paste0('mixN', N, 'K', K, '.RDS'))
 
 
 # Weights

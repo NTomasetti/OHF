@@ -14,9 +14,6 @@ carsVB <- function(data, lambda, model, S = 25, maxIter = 5000, alpha = 0.01, be
     if(iter > maxIter){
       break
     }
-    #if(any(is.na(lambda))){
-    #  break
-    #}
     grad <- matrix(0, dimLambda, S)
     eval <- numeric(S)
     q <- numeric(S)
@@ -63,9 +60,10 @@ carsVB <- function(data, lambda, model, S = 25, maxIter = 5000, alpha = 0.01, be
   return(list(lambda=lambda, LB = LB[1:min(iter-1, maxIter)], iter = min(maxIter, iter-1)))
 }
 
-singleMCMCallMH <- function(data, reps, draw, hyper, thin = 1, error = 'gaussian', stepsize = 0.01, mix = FALSE){
-  # set up likelihood function and theta dimension
+singleMCMCallMH <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, mix = FALSE){
+  # set up theta dimension
   dim <- 7
+  # count accepted draws
   accept <- 0
   # set up storage for saved draws
   nSave <- floor(reps / thin)
@@ -181,7 +179,7 @@ carsVBScore <- function(data, lambda, model, S = 50, maxIter = 5000, alpha = 0.0
   return(list(lambda=lambda, LB = LB[1:min(iter-1, maxIter)], iter = min(maxIter, iter-1)))
 }
 
-fitCarMods <- function(data, prior, starting){
+fitVB <- function(data, prior, starting){
   # Fit Standard VB (ie. Offline)
   fit <- list()
   
@@ -189,12 +187,40 @@ fitCarMods <- function(data, prior, starting){
   mean <- prior[[1]][1:6]
   u <- matrix(prior[[1]][7:42], 6)
   linv <- solve(t(u))
-  fit[[1]] <- carsVB(data, starting[[1]], lags = 2, model = singlePriorSingleApprox, mean = mean, Linv = linv, dimTheta = 6)$lambda
+  fit[[1]] <- carsVB(data, starting[[1]], model = singlePriorSingleApprox, mean = mean, Linv = linv, dimTheta = 6, lagsA = 3, lagsD =2)$lambda
   
-  #IH / Mixture
-  fit[[2]] <- carsVBScore(data, starting[[2]], lags = 2, model = singlePriorMixApprox, mean = mean, Linv = linv)$lambda
+  # IH / Mixture
+  fit[[2]] <- carsVBScore(data, starting[[2]], model = singlePriorMixApprox, mean = mean, Linv = linv, lagsA = 3, lagsD =2)$lambda
   
   # CH / Single Component Approx
+  mean <- matrix(prior[[2]][1:(6*6)], 6)
+  linv <- array(0, dim = c(6, 6, 6))
+  dets <- NULL
+  for(k in 1:6){
+    sd <- exp(prior[[2]][6*6 + (k-1)*6 + 1:6])
+    var <- diag(sd^2)
+    linv[,,k] <- solve(t(chol(var)))
+    dets <- c(dets, 1 / prod(sd))
+  }
+  weights <- prior[[2]][73:78]
+  weights <- exp(weights) / sum(exp(weights))
+  fit[[3]] <- carsVB(data, starting[[1]], model = mixPriorSingleApprox, mean = mean, Linv = linv, dets = dets, weights = weights, dimTheta = 6, lagsA = 3, lagsD =2)$lambda
+  
+  # CH / Mixture
+  fit[[4]] <- carsVBScore(data, starting[[2]], model = mixPriorMixApprox, mean = mean, Siginv = siginv, dets = dets, weights = weights, lagsA = 3, lagsD =2)$lambda
+  
+  return(fit)
+}
+
+fitUVB <- function(data, prior, starting){
+  fit <- list()
+  # IH / Single Component Approx
+  mean <- prior[[1]][1:6]
+  u <- matrix(prior[[1]][7:42], 6)
+  linv <- solve(t(u))
+  fit[[1]] <- carsVB(data, starting[[1]], model = singlePriorSingleApprox, mean = mean, Linv = linv, dimTheta = 6, lagsA = 3, lagsD = 2)$lambda
+  
+  # IH / Mixture
   mean <- matrix(prior[[2]][1:(6*6)], 6)
   siginv <- array(0, dim = c(6, 6, 6))
   dets <- NULL
@@ -206,11 +232,27 @@ fitCarMods <- function(data, prior, starting){
   }
   weights <- prior[[2]][73:78]
   weights <- exp(weights) / sum(exp(weights))
-  start <- Sys.time()
-  fit[[3]] <- carsVB(data, starting[[1]], lags = 2, model = mixPriorSingleApprox, mean = mean, sigInv = siginv, dets = dets, weights = weights, dimTheta = 6)$lambda
+  fit[[2]] <- carsVBScore(data, starting[[2]], model = mixPriorMixApprox, mean = mean, Linv = linv, lagsA = 3, lagsD = 2)$lambda
+  
+  # CH / Single Component Approx
+  mean <- prior[[3]][1:6]
+  u <- matrix(prior[[3]][7:42, 6])
+  linv <- solve(t(u))
+  fit[[3]] <- carsVB(data, starting[[1]], model = singlePriorSingleApprox, mean = mean, Linv = linv, dimTheta = 6, lagsA = 3, lagsD = 2)$lambda
   
   # CH / Mixture
-  fit[[4]] <- carsVBScore(data, starting[[2]], lags = 2, model = mixPriorMixApprox, mean = mean, Siginv = siginv, dets = dets, weights = weights)$lambda
+  mean <- matrix(prior[[4]][1:(6*6)], 6)
+  siginv <- array(0, dim = c(6, 6, 6))
+  dets <- NULL
+  for(k in 1:6){
+    sd <- exp(prior[[4]][6*6 + (k-1)*6 + 1:6])
+    var <- diag(sd^2)
+    siginv[,,k] <- solve(var)
+    dets <- c(dets, 1 / prod(sd))
+  }
+  weights <- prior[[4]][73:78]
+  weights <- exp(weights) / sum(exp(weights))
+  fit[[4]] <- carsVBScore(data, starting[[2]], model = mixPriorMixApprox, mean = mean, Siginv = siginv, dets = dets, weights = weights, lagsA = 3, lagsD = 2)$lambda
   
   return(fit)
 }

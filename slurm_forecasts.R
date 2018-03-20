@@ -79,12 +79,12 @@ for(s in seq_along(sSeq)){
   }
 
   # Offline (Standard VB) model fits
-  fitOffline <- fitCarMods(data[1:sSeq[s], 1:2], prior, starting)
+  fitOffline <- fitVB(data[1:sSeq[s], 1:2], prior, starting)
 
   if(s == 1){
     fitOnline <- fitOffline
   } else {
-    fitOnline <- fitCarMods(data[(sSeq[s-1]-1):sSeq[s], 1:2], prior, starting)
+    fitOnline <- fitUVB(data[(sSeq[s-1]-1):sSeq[s], 1:2], fitOnline, starting)
   }
 
   # Get MCMC posteriors
