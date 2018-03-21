@@ -346,7 +346,3 @@ VBDens <- function(data, fit, grid, H, mix, laneSize){
   }
   results
 }
-
-
-
-

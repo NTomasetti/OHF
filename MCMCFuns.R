@@ -7,21 +7,21 @@ sourceCpp('MCMCFuns.cpp')
 # An MCMC algorithn for the clustered hierarchical model with a K component gaussian prior distribution
 # Each theta_i is drawn with metropolis hastings, 
 # Prior components (beta) are drawn with gibbs from the posterior conditionals
-mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, lagsA = 1, lagsD = 1, stepsize = 0.01){
+mixtureMCMC <- function(data, reps, draw, hyper, K = 2, thinB = 10, thinT = 100, lagsA = 1, lagsD = 1, includeRho = FALSE, stepsize = 0.01){
   N <- length(data)
   stepsize <- rep(stepsize, N)
   accept <- rep(0, N)
   
-  dim <- 3 + lagsA + lagsD
+  dim <- 2 + lagsA + lagsD + includeRho
   #set up storage for saved draws
-  nSave <- floor(reps / thin)
+  nSaveB <- floor(reps / thinB)
+  nSaveT <- floor(reps / thinT)
   saveDraws <- list(list())
   for(i in 1:K){
-    saveDraws[[1]][[i]] <- list(mean = matrix(0, nSave, dim), varInv = array(0, dim = c(dim, dim, nSave)))
+    saveDraws[[1]][[i]] <- list(mean = matrix(0, nSaveB, dim), varInv = array(0, dim = c(dim, dim, nSaveB)))
   }
-  saveDraws[[1]]$pi <- matrix(0, nSave, K)
   for(i in 1:N){
-    saveDraws[[i+1]] <- list(theta = matrix(0, nSave, dim), k = rep(0, nSave))
+    saveDraws[[i+1]] <- list(theta = matrix(0, nSaveT, dim), k = rep(0, nSaveT), pi = matrix(0, nSaveT, K))
   }
   # changing MH acceptance rate
   alpha <- - qnorm(0.234/2)
@@ -44,8 +44,8 @@ mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, lagsA = 1, lag
     for(j in 1:N){
       candidate <- draw[[j+1]]$theta +  stepsize[j] * rnorm(dim)
       group <- draw[[j+1]]$k
-      canDens <- nlogDensity(data[[j]], candidate, draw[[1]][[group]]$mean, draw[[1]][[group]]$varInv, lagsA, lagsD)
-      oldDens <- nlogDensity(data[[j]], draw[[j+1]]$theta, draw[[1]][[group]]$mean, draw[[1]][[group]]$varInv, lagsA, lagsD)
+      canDens <- nlogDensity(data[[j]], candidate, draw[[1]][[group]]$mean, draw[[1]][[group]]$varInv, lagsA, lagsD, includeRho)
+      oldDens <- nlogDensity(data[[j]], draw[[j+1]]$theta, draw[[1]][[group]]$mean, draw[[1]][[group]]$varInv, lagsA, lagsD, includeRho)
       
       ratio <- exp(canDens - oldDens)
       
@@ -62,7 +62,7 @@ mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, lagsA = 1, lag
     for(j in 1:N){
       p <- numeric(K)
       for(k in 1:K){
-        p[k] <-  log(draw[[1]]$pi[k])  +  0.5 * log(det(draw[[1]][[k]]$varInv)) -
+        p[k] <-  log(draw[[j+1]]$pi[k])  +  0.5 * log(det(draw[[1]][[k]]$varInv)) -
           0.5 * (draw[[j+1]]$theta - draw[[1]][[k]]$mean) %*% draw[[1]][[k]]$varInv %*%
           (draw[[j+1]]$theta - draw[[1]][[k]]$mean)
       }
@@ -71,11 +71,12 @@ mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, lagsA = 1, lag
       draw[[j+1]]$k <- base::sample(1:K, 1, prob=p)
     }
     #pi_i
-    group <- rep(0, K)
     for(j in 1:N){
-      group[draw[[j+1]]$k] <- group[draw[[j+1]]$k] +  1
+      group <- rep(0, K)
+      group[draw[[j+1]]$k] <- 1
+      draw[[j+1]]$pi <- c(rdirichlet(1, hyper$alpha + group))
     }
-    draw[[1]]$pi <- c(rdirichlet(1, hyper$alpha + group))
+
     # thetaHat_k
     sumK <- rep(0, K)
     sumTheta <- matrix(0, dim, K)
@@ -100,15 +101,17 @@ mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, lagsA = 1, lag
       draw[[1]][[k]]$varInv <- rWishart(1, vardf, solve(scaleMat))[,,1]
     }
     # save draws
-    if(i %% thin == 0){
-      saveDraws[[1]]$pi[i/thin, ] <- draw[[1]]$pi
+    if(i %% thinB == 0){
       for(k in 1:K){
-        saveDraws[[1]][[k]]$mean[i/thin,] <- draw[[1]][[k]]$mean
-        saveDraws[[1]][[k]]$varInv[,,i/thin] <- draw[[1]][[k]]$varInv
+        saveDraws[[1]][[k]]$mean[i/thinB,] <- draw[[1]][[k]]$mean
+        saveDraws[[1]][[k]]$varInv[,,i/thinB] <- draw[[1]][[k]]$varInv
       }
+    }
+    if(i %% thinT == 0){
       for(j in 1:N){
-        saveDraws[[j+1]]$theta[i/thin, ] <- draw[[j+1]]$theta
-        saveDraws[[j+1]]$k[i/thin] <- draw[[j+1]]$k
+        saveDraws[[j+1]]$theta[i/thinT, ] <- draw[[j+1]]$theta
+        saveDraws[[j+1]]$k[i/thinT] <- draw[[j+1]]$k
+        saveDraws[[j+1]]$pi[i/thinT, ] <- draw[[j+1]]$pi
       }
     }
     # print progress
@@ -132,10 +135,10 @@ mixtureMCMC <- function(data, reps, draw, hyper, thin = 1, K = 2, lagsA = 1, lag
 
 # An MCMC algorithm for the homogenous model
 # Variance components are drawn with metropolis hastings while ar components are drawn from gibbs posterior conditionals
-homogMCMC <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lagsA = 1, lagsD = 1){
+homogMCMC <- function(data, reps, draw, hyper, thin = 1, lagsA = 1, lagsD = 1, includeRho = FALSE, stepsize = 0.01){
   N <- length(data)
   # set up likelihood function and theta dimension
-  dim <- 3 + lagsA + lagsD
+  dim <- 2 + lagsA + lagsD + includeRho
   accept <- 0
   # set up storage for saved draws
   nSave <- floor(reps / thin)
@@ -213,8 +216,8 @@ homogMCMC <- function(data, reps, draw, hyper, thin = 1, stepsize = 0.01, lagsA 
     canDens <- 0
     oldDens <- 0
     for(j in 1:N){
-      canDens <- canDens + nlogDensity(data[[j]], candidate, hyper$mean, hyper$varInv, lagsA, lagsD)
-      oldDens <- oldDens + nlogDensity(data[[j]], draw, hyper$mean, hyper$varInv, lagsA, lagsD)
+      canDens <- canDens + nlogDensity(data[[j]], candidate, hyper$mean, hyper$varInv, lagsA, lagsD, incldueRho)
+      oldDens <- oldDens + nlogDensity(data[[j]], draw, hyper$mean, hyper$varInv, lagsA, lagsD, includeRho)
     }
     ratio <- exp(canDens - oldDens)
     c <- stepsize / stepsizeCons
