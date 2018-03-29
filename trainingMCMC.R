@@ -8,10 +8,12 @@ read.csv('carsAug.csv') %>%
   ungroup() -> carsAug
 colnames(carsAug) <- c('ID', 'x', 'a', 'y', 'v', 'delta')
 
+carsAug <- readRDS('carsAug.RDS')
+
 
 # Select training vehicles from the vehicles that did not stop.
 set.seed(1)
-N <- 1000
+N <- 2000
 carsAug %>%
   group_by(ID) %>%
   filter(min(relV) > 0) %>%
@@ -25,7 +27,7 @@ for(i in 1:N){
   carsAug %>%
     filter(ID == idSubset[i]) %>%
     mutate(d = relD - pi/2) %>% 
-    select(relA , d, relV, relX, relY) %>%
+    dplyr::select(relA , d, relV, relX, relY) %>%
     as.matrix() -> data[[i]]
 }
 
@@ -140,21 +142,22 @@ HomogenoousModel {
   reps <- 50000
   lagsA <- 4
   lagsD <- 4
-  draws <- c(-5, -5, rep(0, 1 + lagsA + lagsD))
-  hyper <- list(mean = c(-5, -5, rep(0, 1 + lagsA + lagsD)), varInv = solve(diag(c(10, 10, 2.5, rep(10, lagsA + lagsD)))))
+  draws <- c(-5, -5, rep(0, lagsA + lagsD))
+  hyper <- list(mean = c(-5, -5, rep(0, lagsA + lagsD)), varInv = solve(diag(10, 2 + lagsA + lagsD)))
   homogDraws <- homogMCMC(data, reps, draws, hyper, thin = 10, lagsA = lagsA, lagsD = lagsD, includeRho = FALSE, stepsize = 0.01)
-  #saveRDS(homogDraws, 'homogMCMCN3000.RDS')
+  saveRDS(homogDraws, paste0('homogMCMCN', N, '.RDS'))
+  homogDraws <- readRDS(paste0('homogMCMCN', N, '.RDS'))
   
   homogDraws$draws %>%
     as.data.frame() %>%
-    mutate(iter = seq_along(V1) * thin,
+    mutate(iter = seq_along(V1) * 10,
            V1 = exp(V1), 
-           V2 = exp(V2),
-           V3 = 2 / (1 + exp(-V3)) - 1) %>%
-    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `rho` = V3, `phi[1]` = V4, `phi[2]` = V5, `phi[3]` = V6, `gamma[1]` = V7, `gamma[2]` = V8) %>%
+           V2 = exp(V2)) %>%
+    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `phi[1]` = V3, `phi[2]` = V4, `phi[3]` = V5, `phi[4]` = V6,
+           `gamma[1]` = V7, `gamma[2]` = V8, `gamma[3]` = V9, `gamma[4]` = V10) %>%
     gather(var, draw, -iter) %>%
-    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
-                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) %>% 
+    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]', 'phi[4]',
+                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'gamma[3]', 'gamma[4]'))) %>% 
     filter(iter > reps / 2) %>%
     ggplot() + geom_line(aes(iter, draw)) + 
     facet_wrap(~var, scales = 'free', labeller = label_parsed) +
@@ -162,16 +165,16 @@ HomogenoousModel {
     
   homogDraws$draws %>%
     as.data.frame() %>%
-    mutate(iter = seq_along(V1) * thin,
+    mutate(iter = seq_along(V1) * 10,
            V1 = exp(V1), 
-           V2 = exp(V2),
-           V3 = 2 / (1 + exp(-V3)) - 1) %>%
-    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `rho` = V3, `phi[1]` = V4, `phi[2]` = V5, `phi[3]` = V6, `gamma[1]` = V7, `gamma[2]` = V8) %>%
+           V2 = exp(V2)) %>%
+    rename(`sigma[epsilon]^{2}` = V1, `sigma[eta]^{2}` = V2, `phi[1]` = V3, `phi[2]` = V4, `phi[3]` = V5, `phi[4]` = V6,
+           `gamma[1]` = V7, `gamma[2]` = V8, `gamma[3]` = V9, `gamma[4]` = V10) %>%
     gather(var, draw, -iter) %>%
-    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
-                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) %>% 
+    mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]', 'phi[4]',
+                                        'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'gamma[3]', 'gamma[4]'))) %>% 
     filter(iter > reps / 2) %>%
-    ggplot() + geom_density(aes(draw)) + facet_wrap(~var, scales = 'free', labeller = label_parsed) + 
+    ggplot() + geom_density(aes(draw)) + facet_wrap(~var, scales = 'free')+#, labeller = label_parsed) + 
     theme_bw() + 
     theme(axis.text.x = element_text(angle = 315, hjust = 0)) + 
     labs(x = NULL, y = NULL)
@@ -181,11 +184,11 @@ HomogenoousModel {
 CHModel{
   
 reps <- 50000
-K <- 3
+K <- 5
 thin <- 10
-burn <- 0.9
-lagsA <- 3
-lagsD <- 2
+burn <- 0
+lagsA <- 4
+lagsD <- 4
 
 draws <- list(list())
 hyper <- list()
@@ -207,23 +210,16 @@ saveRDS(mixDraws, paste0('mixN', N, 'K', K, '.RDS'))
 mixDraws <- readRDS(file = paste0('mixN', N, 'K', K, '.RDS'))
 
 
-# Weights
-mixDraws$draws[[1]]$pi %>%
-  as.data.frame() %>%
-  mutate(iter = seq_along(V1) * thin) %>%
-  filter(iter > burn*reps) %>%
-  gather(pi, draw, -iter) %>%
-  ggplot() + geom_line(aes(iter, draw)) + 
-  facet_wrap(~pi, scales = 'free')
+# Groups
+mapK <- NULL
+for(j in 1:N){
+  kdraw <- mixDraws$draws[[j+1]]$k[(burn * (reps / 100) + 1) : (reps/100)]
+  tab <- table(kdraw)
+  map <- names(which.max(tab))
+  mapK <- c(mapK, as.numeric(map))
+}
+ggplot() + geom_bar(aes(mapK))
 
-mixDraws$draws[[1]]$pi %>%
-  as.data.frame() %>%
-  mutate(iter = seq_along(V1) * thin) %>%
-  filter(iter >  burn*reps) %>%
-  gather(pi, draw, -iter) %>%
-  ggplot() + geom_density(aes(draw)) + 
-  facet_wrap(~pi, scales = 'free')
-  
 muK <- NULL
 for(i in 1:K){
   mixDraws$draws[[1]][[i]]$mean %>%
@@ -240,7 +236,8 @@ muK %>%
   mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
                                       'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) %>% 
   ggplot() + geom_line(aes(iter, draw)) + 
-  facet_grid(var ~ group, scales = 'free') + theme_bw() + labs(title = 'mean') -> p1
+  facet_grid(var ~ group, scales = 'free', labeller = label_parsed) + 
+  theme_bw() + labs(title = 'mean') -> p1
   
   
 sdK <- NULL
@@ -261,7 +258,8 @@ sdK %>%
     mutate(var = factor(var, levels = c('sigma[epsilon]^{2}', 'phi[1]', 'phi[2]', 'phi[3]',
                                         'sigma[eta]^{2}', 'gamma[1]', 'gamma[2]', 'rho'))) %>% 
     ggplot() + geom_line(aes(iter, draw)) + 
-    facet_grid(var ~ group, scales = 'free') + theme_bw() + labs(title = 'standard deviation') -> p2
+    facet_grid(var ~ group, scales = 'free', labeller = label_parsed) + 
+  theme_bw() + labs(title = 'standard deviation') -> p2
   
 gridExtra::grid.arrange(p1, p2, ncol = 2)
   
@@ -315,26 +313,44 @@ ggplot(densMixMod) + geom_line(aes(support, dens)) +
   theme_bw() + 
   theme(legend.position = 'none', axis.text.x = element_text(angle = 45, hjust = 1))
 
-means <- rep(0, K*8)
-varinv <- matrix(0, K*8, 8)
-linv <- matrix(0, K*8, 8)
+means <- rep(0, K*10)
+varinv <- matrix(0, K*10, 10)
+linv <- matrix(0, K*10, 10)
 pi <- rep(0, K)
-for(i in seq_along(index)){
+for(i in 1:5000){
   for(k in 1:K){
-    means[(k-1)*8 + 1:8] <- means[(k-1)*8 + 1:8] + mixDraws$draws[[1]][[k]]$mean[index[i],] / length(index)
-    uinv <- chol(mixDraws$draws[[1]][[k]]$varInv[,,index[i]])
-    linv[(k-1)*8 + 1:8,] <- linv[(k-1)*8 + 1:8,] + t(uinv) / length(index)
-    varinv[(k-1)*8 + 1:8,] <- varinv[(k-1)*8 + 1:8,] + uinv %*% t(uinv) / length(index)
-    pi[k] <- pi[k] + mixDraws$draws[[1]]$pi[index[i],k] / length(index)
+    means[(k-1)*10 + 1:10] <- means[(k-1)*10 + 1:10] + mixDraws$draws[[1]][[k]]$mean[i,] / 5000
+    uinv <- solve(chol(solve(mixDraws$draws[[1]][[k]]$varInv[,,i])))
+    linv[(k-1)*10 + 1:10,] <- linv[(k-1)*10 + 1:10,] + t(uinv) / 5000
+    varinv[(k-1)*10 + 1:10,] <- varinv[(k-1)*10 + 1:10,] + uinv %*% t(uinv) / length(index)
+    if(i %% 10 == 0){
+      for(j in 1:N){
+        pi[k] <- pi[k] + mixDraws$draws[[j+1]]$pi[i/10,k] / (N * 500)
+      }
+    }
   }
 }
 dets <- numeric(K)
 for(k in 1:K){
-  dets[k] <- det(linv[(k-1)*8 + 1:8, ])  
+  dets[k] <- det(linv[(k-1)*10 + 1:10, ])  
 }
 priorMix <- list(mean = means, linv = linv, varInv = varinv, dets = dets, weights = pi)
-startingLam <- c(means, rep(c(diag(0.5, 8)), K), rep(1, K))
+startingLam <- c(means,, K), rep(1, K))
+
+saveRDS(priorMix, 'CHFit.RDS')
   
 }
 
 
+idTest <- ids[!ids %in% idSubset]
+dataTest <- list()
+for(i in seq_along(idTest)){
+  carsAug %>%
+    filter(ID == idTest[i]) %>%
+    mutate(d = relD - pi/2) %>% 
+    dplyr::select(relA , d, relV, relX, relY) %>%
+    as.matrix() -> dataTest[[i]]
+}
+
+saveRDS(dataTest, file = 'dataTest.RDS')
+saveRDS(idTest, file = 'idTest.RDS')

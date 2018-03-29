@@ -16,8 +16,6 @@ using Eigen::Dynamic;
 using Eigen::MatrixXd; 
 using Eigen::Map;
 
-//TODO: Change likelihood to dependent structure (and possibly another model entirely)
-
 // Sobol generation and shuffling
 
 // [[Rcpp::export]]
@@ -445,7 +443,7 @@ Rcpp::List singlePriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec thet
   double logp = pLogDensSingle(data, theta, mean, Linv, lagsA, lagsD);
   double elbo = logp - qEval;
   
-  for(int i = 0; i < 13*6; ++i){
+  for(int i = 0; i < dim; ++i){
     grad(i) *= elbo;
   }
   return Rcpp::List::create(Rcpp::Named("grad") = grad,
@@ -453,11 +451,10 @@ Rcpp::List singlePriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec thet
 }
 
 // [[Rcpp::export]]
-Rcpp::List mixPriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec theta, mat mean, cube SigInv, vec dets, vec weights, int lagsA = 1, int lagsD = 1){
+Rcpp::List mixPriorMixApprox(mat data, Rcpp::NumericMatrix lambdaIn, vec theta, mat mean, cube SigInv, vec dets, vec weights, int lagsA = 1, int lagsD = 1, int mix = 6){
   Map<MatrixXd> lambda(Rcpp::as<Map<MatrixXd> >(lambdaIn));
   double qEval;
   int dim = lambda.rows();
-  int mix = weights.n_rows;
   Matrix<double, Dynamic, 1> grad(dim);
   
   mixQlogdens logQ(theta, mix);
@@ -505,10 +502,10 @@ double nlogDensity (mat data, vec theta, vec mu, mat varInv, int lagsA = 1, int 
 double nMixLogDens (mat data, vec theta, vec mu, mat varInv, vec weights, int lagsA = 1, int lagsD = 1){
   using namespace std;
   int T = data.n_rows;
-  int dim = 3 + lagsA + lagsD;
+  int dim = 2 + lagsA + lagsD;
   int mix = weights.n_elem;
   double dens = 0;
-  for(int k = 0; k < K; ++k){
+  for(int k = 0; k < mix; ++k){
     vec submean = mu.subvec(k*dim, (k+1)*dim-1);
     mat subinv = varInv.rows(k*dim, (k+1)*dim-1);
     dens += weights(k) * sqrt(det(subinv)) * exp(-0.5 * as_scalar((theta - submean).t() * subinv * (theta - submean)));
@@ -523,10 +520,9 @@ double nMixLogDens (mat data, vec theta, vec mu, mat varInv, vec weights, int la
     for(int i = 1; i < lagsD; ++i){
       meanD += theta(2 + lagsA + i) * data(t - i, 1);
     }
-    double z = pow(data(t, 0) - meanA, 2) / exp(theta(0))  +  pow(data(t, 1) - meanD, 2) / exp(theta(1))  -
-      2 * rho * (data(t, 0) - meanA) * (data(t, 1) - meanD) / (sqrt(exp(theta(0))) * sqrt(exp(theta(1))));
+    double z = pow(data(t, 0) - meanA, 2) / exp(theta(0))  +  pow(data(t, 1) - meanD, 2) / exp(theta(1));
     
-    dens += - 0.5 * (theta(0) + theta(1) + log(1 - rho * rho))  -  z / (2 - 2 * rho * rho);
+    dens += - 0.5 * (theta(0) + theta(1))  -  z / 2;
   }
   return dens;
 }
@@ -534,175 +530,114 @@ double nMixLogDens (mat data, vec theta, vec mu, mat varInv, vec weights, int la
 // Forecast density evaluation
 
 // [[Rcpp::export]]
-cube evalVBDens (mat data, vec mean, mat L, vec weights, int N, int H, mat grid, bool mix){
-  cube densities (N, N, H, fill::zeros);
-  boost::math::normal_distribution<> Zdist(0, 1);
-  
-  for(int m = 0; m < 1000; ++m){
-    // Set up lags of predicted means, starting with the true data
-    double afc1 = data(1, 0), afc2 = data(0, 0), dfc1 = data(1, 1), dfc2 = data(0, 1), afc, dfc, vfc;
-    vec draws(6);
-    if(!mix){
-      // If not a mixture, draws = mu + L * eps
-      draws = mean + L * randn<vec>(6);
-    } else {
-      // If it is a mixture distribution choose one via inverse CDF weights sampling, then do mu_component + L_component * eps
-      double u = randu<double>();
-      int comp;
-      for(int i = 0; i < 6; ++i){
-        if(u < weights(i)){
-          comp = i;
-          break;
-        }
-      }
-      vec submean = mean.rows(comp*6, (comp+1)*6 - 1);
-      mat subL = L.rows(comp*6, (comp+1)*6-1);
-      draws = submean + subL * randn<vec>(6);
-    }
-    double sigV = std::sqrt(std::exp(draws(0)));
-    double sigD = std::sqrt(std::exp(draws(1)));
-    for(int h = 0; h < H; ++h){
-      // Step afc and dfc means forward, vfc = afc + lagged velocity
-      afc = afc1 * draws(2) + afc2 * draws(3);
-      dfc = dfc1 * draws(4) + dfc2 * draws(5);
-      vfc = afc + data(2 + h, 2);
-      // Iterate densities over the grid
-      for(int i = 0; i < N; ++i){
-        for(int j = 0; j < N; ++j){
-          // Transform delta x / delta y to velocity and angle
-          double v = std::sqrt(
-            std::pow(grid(i*N + j, 0), 2) +
-              std::pow(grid(i*N + j, 1), 2)
-          );
-          double del = std::atan2(
-            grid(i*N + j, 1),
-            grid(i*N + j, 0)
-          ) - 1.570796;
-          // p(x, y) = p(v) * p(d) / sqrt(dx^2 + dy^2)
-          densities(i, j, h) += (pdf(Zdist, (v - vfc) / sigV) / sigV) *
-            (pdf(Zdist, (del - dfc) / sigD) / sigD) / (v * 1000);
-        }
-      }
-      // lag acceleration and angle
-      afc2 = afc1;
-      afc1 = afc;
-      dfc2 = dfc1;
-      dfc1 = dfc;
-    }
-  }
-  
-  return densities;    
-}
-
-// [[Rcpp::export]]
-cube evalVBDensIndep (mat data, vec mean, mat L, vec weights, int N, int H, mat grid, bool mix){
+cube evalVBDensIndep (mat data, vec mean, mat L, vec weights, int N, int H, mat grid, bool isMix, int dim, int K, int lagsA, int lagsD){
   cube densities (N, 2, H, fill::zeros);
   boost::math::normal_distribution<> Zdist(0, 1);
   
   for(int m = 0; m < 1000; ++m){
     // Set up lags of predicted means, starting with the true data
-    double afc1 = data(1, 0), afc2 = data(0, 0), dfc1 = data(1, 1), dfc2 = data(0, 1), afc, dfc, vfc;
-    vec draws(6);
-    if(!mix){
+    int maxLags = std::max(lagsA, lagsD);
+    vec alags = data(span(std::min(0, lagsD - lagsA), maxLags-1), 0), dlags = data(span(std::min(0, lagsA - lagsD), maxLags-1), 1);
+    vec draws(dim);
+    if(!isMix){
       // If not a mixture, draws = mu + L * eps
-      draws = mean + L * randn<vec>(6);
+      draws = mean + L * randn<vec>(dim);
     } else {
       // If it is a mixture distribution choose one via inverse CDF weights sampling, then do mu_component + L_component * eps
       double u = randu<double>();
       int comp;
-      for(int i = 0; i < 6; ++i){
+      for(int i = 0; i < K; ++i){
         if(u < weights(i)){
           comp = i;
           break;
         }
       }
-      vec submean = mean.rows(comp*6, (comp+1)*6 - 1);
-      mat subL = L.rows(comp*6, (comp+1)*6-1);
-      draws = submean + subL * randn<vec>(6);
+      vec submean = mean.rows(comp*dim, (comp+1)*dim - 1);
+      mat subL = L.rows(comp*dim, (comp+1)*dim-1);
+      draws = submean + subL * randn<vec>(dim);
     }
-    double sigV = std::sqrt(std::exp(draws(0)));
-    double sigD = std::sqrt(std::exp(draws(1)));
+    double sigmaSqA = std::exp(draws(0));
+    double sigmaSqD = std::exp(draws(1));
+    vec varA(lagsA, fill::zeros), varD(lagsD, fill::zeros);
+    double afc, dfc;
     for(int h = 0; h < H; ++h){
-      // Step afc and dfc means forward, vfc = afc + lagged velocity
-      afc = afc1 * draws(2) + afc2 * draws(3);
-      dfc = dfc1 * draws(4) + dfc2 * draws(5);
-      // Iterate densities
+      afc = dfc = 0;
+      double currentVarA = sigmaSqA, currentVarD = sigmaSqD;
+      for(int i = 1; i <= lagsA; ++i){
+        afc += draws(1 + i) * alags(lagsA - i);
+        currentVarA += pow(draws(1 + i), 2) * varA(lagsA - i);
+      }
+      for(int i = 1; i <= lagsD; ++i){
+        dfc += draws(1 + lagsA + i) * dlags(lagsD - i);
+        currentVarD += pow(draws(1 + lagsA + i), 2) * varD(lagsD - i);
+      }
+      double sdA = std::sqrt(currentVarA), sdD = std::sqrt(currentVarD);
+      // Iterate densities over the grid
       for(int i = 0; i < N; ++i){
-        densities(i, 0, h) += pdf(Zdist, (grid(i, 0) - afc) / sigV) / (1000 * sigV);
-        densities(i, 1, h) += pdf(Zdist, (grid(i, 1) - dfc) / sigD) / (1000 * sigD);
+        densities(i, 0, h) += pdf(Zdist, (grid(i, 0) - afc) / sdA) / (1000 * sdA);
+        densities(i, 1, h) += pdf(Zdist, (grid(i, 1) - dfc) / sdD) / (1000 * sdD);
       }
       // lag acceleration and angle
-      afc2 = afc1;
-      afc1 = afc;
-      dfc2 = dfc1;
-      dfc1 = dfc;
+      for(int i = 0; i < lagsA - 1; ++i){
+        alags(i) = alags(i+1);
+        varA(i) = varA(i+1);
+      }
+      for(int i = 0; i < lagsD - 1; ++i){
+        dlags(i) = dlags(i+1);
+        varD(i) = varD(i+1);
+      }
+      alags(lagsA - 1) = afc;
+      dlags(lagsD - 1) = dfc;
+      varA(lagsA - 1) = currentVarA;
+      varD(lagsD - 1) = currentVarD;
     }
   }
   return densities;    
 }
 
 // [[Rcpp::export]]
-cube evalMCMCDens (mat data, int N, int H, mat grid, mat MCMCdraws){
+cube evalMCMCDensIndep (mat data, int N, int H, mat grid, mat MCMCdraws, int lagsA, int lagsD){
   cube densities (N, N, H, fill::zeros);
   boost::math::normal_distribution<> Zdist(0, 1);
   
   for(int m = 0; m < 1000; ++m){
-    double afc1 = data(1, 0), afc2 = data(0, 0), dfc1 = data(1, 1), dfc2 = data(0, 1), afc, dfc, vfc;
+    int maxLags = std::max(lagsA, lagsD);
+    vec alags = data(span(std::min(0, lagsD - lagsA), maxLags-1), 0), dlags = data(span(std::min(0, lagsA - lagsD), maxLags-1), 1);
     vec draws = MCMCdraws.row(1000 + 4 * m).t();
-    double sigV = std::sqrt(std::exp(draws(0)));
-    double sigD = std::sqrt(std::exp(draws(1)));
+    double sigmaSqA = std::exp(draws(0));
+    double sigmaSqD = std::exp(draws(1));
+    vec varA(lagsA, fill::zeros), varD(lagsD, fill::zeros);
+    double afc, dfc;
     for(int h = 0; h < H; ++h){
-      afc = afc1 * draws(2) + afc2 * draws(3);
-      dfc = dfc1 * draws(4) + dfc2 * draws(5);
-      vfc = afc + data(2 + h, 2);
+      afc = dfc = 0;
+      double currentVarA = sigmaSqA, currentVarD = sigmaSqD;
+      for(int i = 1; i <= lagsA; ++i){
+        afc += draws(1 + i) * alags(lagsA - i);
+        currentVarA += pow(draws(1 + i), 2) * varA(lagsA - i);
+      }
+      for(int i = 1; i <= lagsD; ++i){
+        dfc += draws(1 + lagsA + i) * dlags(lagsD - i);
+        currentVarD += pow(draws(1 + lagsA + i), 2) * varD(lagsD - i);
+      }
+      double sdA = std::sqrt(currentVarA), sdD = std::sqrt(currentVarD);
       // Iterate densities over the grid
       for(int i = 0; i < N; ++i){
-        for(int j = 0; j < N; ++j){
-          // Transform delta x / delta y to velocity and angle
-          double v = std::sqrt(
-            std::pow(grid(i*N + j, 0), 2) +
-              std::pow(grid(i*N + j, 1), 2)
-          );
-          double del = std::atan2(
-            grid(i*N + j, 1),
-            grid(i*N + j, 0)
-          ) - 1.570796;
-          // p(x, y) = p(v) * p(d) / sqrt(dx^2 + dy^2)
-          densities(i, j, h) += (pdf(Zdist, (v - vfc) / sigV) / sigV) *
-            (pdf(Zdist, (del - dfc) / sigD) / sigD) / (v * 1000);
-        }
+        densities(i, 0, h) += pdf(Zdist, (grid(i, 0) - afc) / sdA) / (1000 * sdA);
+        densities(i, 1, h) += pdf(Zdist, (grid(i, 1) - dfc) / sdD) / (1000 * sdD);
       }
-      afc2 = afc1;
-      afc1 = afc;
-      dfc2 = dfc1;
-      dfc1 = dfc;
-    }
-  }
-  return densities;
-}
-
-// [[Rcpp::export]]
-cube evalMCMCDensIndep (mat data, int N, int H, mat grid, mat MCMCdraws){
-  cube densities (N, N, H, fill::zeros);
-  boost::math::normal_distribution<> Zdist(0, 1);
-  
-  for(int m = 0; m < 1000; ++m){
-    double afc1 = data(1, 0), afc2 = data(0, 0), dfc1 = data(1, 1), dfc2 = data(0, 1), afc, dfc, vfc;
-    vec draws = MCMCdraws.row(1000 + 4 * m).t();
-    double sigV = std::sqrt(std::exp(draws(0)));
-    double sigD = std::sqrt(std::exp(draws(1)));
-    for(int h = 0; h < H; ++h){
-      afc = afc1 * draws(2) + afc2 * draws(3);
-      dfc = dfc1 * draws(4) + dfc2 * draws(5);
-      // Iterate densities over the grid
-      for(int i = 0; i < N; ++i){
-        densities(i, 0, h) += pdf(Zdist, (grid(i, 0) - afc) / sigV) / (1000 * sigV);
-        densities(i, 1, h) += pdf(Zdist, (grid(i, 1) - dfc) / sigD) / (1000 * sigD);
+      // lag acceleration and angle
+      for(int i = 0; i < lagsA - 1; ++i){
+        alags(i) = alags(i+1);
+        varA(i) = varA(i+1);
       }
-      afc2 = afc1;
-      afc1 = afc;
-      dfc2 = dfc1;
-      dfc1 = dfc;
+      for(int i = 0; i < lagsD - 1; ++i){
+        dlags(i) = dlags(i+1);
+        varD(i) = varD(i+1);
+      }
+      alags(lagsA - 1) = afc;
+      dlags(lagsD - 1) = dfc;
+      varA(lagsA - 1) = currentVarA;
+      varD(lagsD - 1) = currentVarD;
     }
   }
   return densities;

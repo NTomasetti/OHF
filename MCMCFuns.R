@@ -34,11 +34,11 @@ mixtureMCMC <- function(data, reps, draw, hyper, K = 2, thinB = 10, thinT = 100,
     } else if(i == 150){
       timePerIter <- (Sys.time() - startTime) / 100
       class(timePerIter) <- 'numeric'
-      print(paste0('Estimated Finishing Time: ', Sys.time() + timePerIter * (reps - 150)))
       if(attr(timePerIter, 'units') == 'mins'){
         attr(timePerIter, 'units') = 'secs'
         timePerIter <- timePerIter * 60
       }
+      print(paste0('Estimated Finishing Time: ', Sys.time() + timePerIter * (reps - 150)))
     }
     # theta_i
     for(j in 1:N){
@@ -149,7 +149,7 @@ homogMCMC <- function(data, reps, draw, hyper, thin = 1, lagsA = 1, lagsD = 1, i
   hyperVar <- diag(solve(hyper$varInv))
 
   # Various sums of data for the conditional distribution cross terms
-  xSums <- matrix(0, dim-1, dim-1)
+  xSums <- matrix(0, 2 + lagsA + lagsD, 2 + lagsA + lagsD)
   lag <- max(lagsA, lagsD) + 1
   for(i in 1:N){
     T <- nrow(data[[i]])
@@ -195,7 +195,7 @@ homogMCMC <- function(data, reps, draw, hyper, thin = 1, lagsA = 1, lagsD = 1, i
   
  
   # Metropolis Hastings variables
-  MHvar <- 1:3
+  MHvar <- ifelse(includeRho, 1:3, 1:2)
   
   for(i in 2:reps){
     # timing
@@ -216,7 +216,7 @@ homogMCMC <- function(data, reps, draw, hyper, thin = 1, lagsA = 1, lagsD = 1, i
     canDens <- 0
     oldDens <- 0
     for(j in 1:N){
-      canDens <- canDens + nlogDensity(data[[j]], candidate, hyper$mean, hyper$varInv, lagsA, lagsD, incldueRho)
+      canDens <- canDens + nlogDensity(data[[j]], candidate, hyper$mean, hyper$varInv, lagsA, lagsD, includeRho)
       oldDens <- oldDens + nlogDensity(data[[j]], draw, hyper$mean, hyper$varInv, lagsA, lagsD, includeRho)
     }
     ratio <- exp(canDens - oldDens)
@@ -232,25 +232,30 @@ homogMCMC <- function(data, reps, draw, hyper, thin = 1, lagsA = 1, lagsD = 1, i
     # Transform to variance params
     sigmaA <- sqrt(exp(draw[1]))
     sigmaD <- sqrt(exp(draw[2]))
-    rho <- 2 / (1 + exp(-draw[3])) - 1
+    if(includeRho){
+      rho <- 2 / (1 + exp(-draw[3])) - 1
+    } else {
+      rho <- 0
+    }
+    
     # Phi parameters
     for(k in 1:lagsA){
       # a_t * a_t terms
       meanNumer <- xSums[1, 1 + k] 
       for(l in 1:lagsA){
         if(l != k){
-          meanNumer <- meanNumer - draw[3 + l] * xSums[1 + k, 1 + l] 
+          meanNumer <- meanNumer - draw[2 + includeRho + l] * xSums[1 + k, 1 + l] 
         }
       }
-      meanNumer <- meanNumer * sigmaD * hyperVar[3 + k]
+      meanNumer <- meanNumer * sigmaD * hyperVar[2 + includeRho + k]
       # a_t * d_t terms
-      meanNumer <- meanNumer - rho * sigmaA * hyperVar[3 + k] * xSums[1 + k, 2 + lagsA]
+      meanNumer <- meanNumer - rho * sigmaA * hyperVar[2 + includeRho + k] * xSums[1 + k, 2 + lagsA]
       for(l in 1:lagsD){
-        meanNumer <- meanNumer + rho * sigmaA * hyperVar[3 + k] * draw[3 + lagsA + l] * xSums[1 + k, 2 + lagsA + l]
+        meanNumer <- meanNumer + rho * sigmaA * hyperVar[2 + includeRho + k] * draw[2 + includeRho + lagsA + l] * xSums[1 + k, 2 + lagsA + l]
       }
-      meanDenom <- xSums[1+k, 1+k] * sigmaD * hyperVar[3 + k] + sigmaA^2 * sigmaD * (1 - rho^2)
-      varNumer <- (1 - rho^2) * sigmaA^2 * sigmaD * hyperVar[3 + k]
-      draw[3 + k] <- rnorm(1, meanNumer / meanDenom, sqrt(varNumer / meanDenom))
+      meanDenom <- xSums[1+k, 1+k] * sigmaD * hyperVar[2 + includeRho + k] + sigmaA^2 * sigmaD * (1 - rho^2)
+      varNumer <- (1 - rho^2) * sigmaA^2 * sigmaD * hyperVar[2 + includeRho + k]
+      draw[2 + includeRho + k] <- rnorm(1, meanNumer / meanDenom, sqrt(varNumer / meanDenom))
     }
     
     # Gamma parameters
@@ -259,18 +264,18 @@ homogMCMC <- function(data, reps, draw, hyper, thin = 1, lagsA = 1, lagsD = 1, i
       meanNumer <- xSums[lagsA + 2, 2 + lagsA + k] 
       for(l in 1:lagsD){
         if(l != k){
-          meanNumer <- meanNumer - draw[3 + lagsA + l] * xSums[lagsA + 2 + k, lagsA + 2 + l] 
+          meanNumer <- meanNumer - draw[2 + includeRho + lagsA + l] * xSums[lagsA + 2 + k, lagsA + 2 + l] 
         }
       }
-      meanNumer <- meanNumer * sigmaA * hyperVar[3 + lagsA +  k]
+      meanNumer <- meanNumer * sigmaA * hyperVar[2 + includeRho + lagsA +  k]
       # a_t * d_t terms
-      meanNumer <- meanNumer - rho * sigmaD * hyperVar[3 + lagsA + k] * xSums[1, 2 + lagsA + k]
+      meanNumer <- meanNumer - rho * sigmaD * hyperVar[2 + includeRho + lagsA + k] * xSums[1, 2 + lagsA + k]
       for(l in 1:lagsA){
-        meanNumer <- meanNumer + rho * sigmaD * hyperVar[3 + lagsA + k] * draw[3 + l] * xSums[2 + lagsA + k, 1 + l]
+        meanNumer <- meanNumer + rho * sigmaD * hyperVar[2 + includeRho + lagsA + k] * draw[2 + includeRho + l] * xSums[2 + lagsA + k, 1 + l]
       }
-      meanDenom <- xSums[2 + lagsA + k, 2 + lagsA + k] * sigmaA * hyperVar[3 + lagsA + k] + sigmaD^2 * sigmaA * (1 - rho^2)
-      varNumer <- (1 - rho^2) * sigmaD^2 * sigmaA * hyperVar[3 + lagsA + k]
-      draw[3 + lagsA + k] <- rnorm(1, meanNumer / meanDenom, sqrt(varNumer / meanDenom))
+      meanDenom <- xSums[2 + lagsA + k, 2 + lagsA + k] * sigmaA * hyperVar[2 + includeRho + lagsA + k] + sigmaD^2 * sigmaA * (1 - rho^2)
+      varNumer <- (1 - rho^2) * sigmaD^2 * sigmaA * hyperVar[2 + includeRho + lagsA + k]
+      draw[2 + includeRho + lagsA + k] <- rnorm(1, meanNumer / meanDenom, sqrt(varNumer / meanDenom))
     }
     
     # save draws
