@@ -21,21 +21,22 @@ homogDraws <- readRDS('homogMCMCN2000.RDS')$draws[seq(2501, 7500, 5),]
 CHprior <- readRDS('CHFit.RDS')
 
 H <- 30
-S <- 30
+S <- 10
 minT <- S
-maxT <- 300
+maxT <- 400
 sSeq <- seq(minT, maxT, S)
-#results <- data.frame()
+results <- data.frame()
 lagsA <- 4
 lagsD <- 4
-K <- 6
+K <- mix <- 6
+dim <- 2 + lagsA + lagsD
 
-# VB Prior Distributions
+# VB Prior Distributions: 1) IH, 2) CH
 prior <- list()
 prior[[1]] <- c(-5, -5, rep(0, 8), c(chol(diag(10, 10))))
 prior[[2]] <- CHprior
 
-# MCMC Hyper parameters - Independent
+# MCMC Hyper parameters
 hyper <- list()
 hyper[[1]] <- list()
 hyper[[1]]$mean <- c(-5, -5, rep(0, 8))
@@ -82,7 +83,7 @@ for(s in seq_along(sSeq)){
                                         grid = grid, 
                                         H = H,
                                         dim = 10,
-                                        K = 5,
+                                        K = K,
                                         isMix = (x %% 2 == 0),
                                         lagsA = lagsA,
                                         lagsD = lagsD))
@@ -95,7 +96,7 @@ for(s in seq_along(sSeq)){
                                           grid = grid, 
                                           H = H,
                                           dim = 10,
-                                          K = 5,
+                                          K = K,
                                           isMix = (x %% 2 == 0),
                                           lagsA = lagsA,
                                           lagsD = lagsD))
@@ -108,7 +109,6 @@ for(s in seq_along(sSeq)){
                                             lagsA = lagsA,
                                             lagsD = lagsD))
   
-  UVB <- SVB <- list(MCMC[[1]], MCMC[[1]], MCMC[[2]], MCMC[[2]])
   # Grab logscores etc. for heterogenous models
   results <- rbind(results,
                    data.frame(logscore = c(SVB[[1]]$logscore, SVB[[2]]$logscore, SVB[[3]]$logscore, SVB[[4]]$logscore,
@@ -121,6 +121,8 @@ for(s in seq_along(sSeq)){
                               model = rep(c('IH', 'IH', 'CH', 'CH', 'IH', 'IH', 'CH', 'CH', 'IH', 'CH'), rep(H, 10)),
                               inference = rep(c('SVB-Single', 'SVB-Mixture', 'SVB-Single', 'SVB-Mixture', 'UVB-Single', 
                                                 'UVB-Mixture', 'UVB-Single', 'UVB-Mixture', 'MCMC', 'MCMC'), rep(H, 10)),
+                              earthmover = c(SVB[[1]]$em, SVB[[2]]$em, SVB[[3]]$em, SVB[[4]]$em, 
+                                            UVB[[1]]$em, UVB[[2]]$em, UVB[[3]]$em, UVB[[4]]$em, rep(NA, 2*H)),
                               S = sSeq[s],
                               id = id)
                    )
@@ -138,6 +140,7 @@ for(s in seq_along(sSeq)){
                               h = 1:H,
                               model = 'Homogenous',
                               inference = 'MCMC',
+                              earthmover = NA,
                               S = sSeq[s],
                               id = id))
   
@@ -167,11 +170,10 @@ for(s in seq_along(sSeq)){
                                 h = h,
                                 model = paste('Naive', 1:9),
                                 inference = NA,
+                                earthmover = NA,
                                 S = sSeq[s],
                                 id = id))
   }
-  
-  print(paste(iter, s))
 }
 
 write.csv(results, paste0('eval/car', id, '.csv'), row.names=FALSE)
