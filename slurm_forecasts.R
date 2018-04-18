@@ -3,26 +3,32 @@ repenv <- Sys.getenv("SLURM_ARRAY_TASK_ID")
 i <- as.numeric(repenv)
 set.seed(1000 + i)
 
-library(Rcpp)#, lib.loc = 'packages')
-library(RcppArmadillo)#, lib.loc = 'packages')
-library(RcppEigen)#, lib.loc = 'packages')
-library(rstan)#, lib.loc = 'packages')
+library(Rcpp, lib.loc = 'packages')
+library(RcppArmadillo, lib.loc = 'packages')
+library(RcppEigen, lib.loc = 'packages')
+library(rstan, lib.loc = 'packages')
+library(ltsa, lib.loc = 'packages')
 source('slurm_RFuns.R')
 sourceCpp('slurm_cppFuns.cpp')
 
 ids <- readRDS('idTest.RDS')
 datatest <- readRDS('dataTest.RDS')
+
 data <- datatest[[i]]
 id <- ids[i]
 
-homogDraws <- readRDS('homogMCMCN2000.RDS')$draws
+homogDraws <- readRDS('homogMCMCN2000.RDS')$draws[seq(2501, 7500, 5),]
 CHprior <- readRDS('CHFit.RDS')
 
 H <- 30
-S <- 10
-maxT <- 450
-sSeq <- seq(100, maxT, S)
-results <- data.frame()
+S <- 30
+minT <- S
+maxT <- 300
+sSeq <- seq(minT, maxT, S)
+#results <- data.frame()
+lagsA <- 4
+lagsD <- 4
+K <- 6
 
 # VB Prior Distributions
 prior <- list()
@@ -37,7 +43,7 @@ hyper[[1]]$varInv <- solve(diag(10, 10))
 hyper[[2]] <- list(mean = prior[[2]]$mean, varInv = prior[[2]]$varInv, weights = prior[[2]]$weights)
 
 starting <- list(matrix(c(prior[[2]]$mean[1:10], diag(0.5, 10)), ncol = 1),
-                 matrix(c(prior[[2]]$mean, rep(log(0.5), 10*5), rep(1, 5)), ncol = 1))
+                 matrix(c(prior[[2]]$mean, rep(log(0.5), 10*K), rep(1, K)), ncol = 1))
 
 # Set forcast supports
 aLower <- min(data[,1])
@@ -45,7 +51,7 @@ aUpper <- max(data[,1])
 dLower <- min(data[,2])
 dUpper <- max(data[,2])
 asup <- seq(aLower - 0.1, aUpper + 0.1, length.out = 200)
-dsup <- seq(dLower - 0.1, dUpper * 0.1, length.out = 200)
+dsup <- seq(dLower - 0.1, dUpper + 0.1, length.out = 200)
 grid <- cbind(asup, dsup)
 
 # Incrementally add data to VB fits
@@ -55,19 +61,19 @@ for(s in seq_along(sSeq)){
   }
 
   # Offline (Standard VB) model fits
-  fitOffline <- fitVB(data[1:sSeq[s], 1:2], prior, starting, 10, 5)
+  fitOffline <- fitVB(data[1:sSeq[s], 1:2], prior, starting, dim = 10, mix = K)
 
   if(s == 1){
     fitOnline <- fitOffline
   } else {
-    fitOnline <- fitUVB(data[(sSeq[s-1]-(max(lagsA, lagsD) - 1)):sSeq[s], 1:2], fitOnline, starting, 10, 5)
+    fitOnline <- fitUVB(data[(sSeq[s-1]-(max(lagsA, lagsD) - 1)):sSeq[s], 1:2], fitOnline, starting, dim = 10, mix = K)
   }
 
   # Get MCMC posteriors
   MCMCDraw <- list()
   for(k in 1:2){
-    MCMCDraw[[k]] <- singleMCMCallMH(data[1:sSeq[s],1:2], 5000, c(-5, -5, rep(0, 8)), hyper[[k]],
-                                 stepsize = 0.05, mix = (k == 2))$draws
+    MCMCDraw[[k]] <- singleMCMCallMH(data[1:sSeq[s],1:2], 15000, homogDraws[1, ], hyper[[k]],
+                                 stepsize = 0.05, mix = (k == 2))$draws[seq(10001, 15000, 5),]
   }
   
   # Evaluate predictive densities
@@ -93,9 +99,8 @@ for(s in seq_along(sSeq)){
                                           isMix = (x %% 2 == 0),
                                           lagsA = lagsA,
                                           lagsD = lagsD))
-    
-   
   }
+  
   MCMC <- lapply(MCMCDraw, function(x) MCMCDens(data = data[(sSeq[s]-(max(lagsA, lagsD)-1)):(sSeq[s] + H), ],
                                             H = H,
                                             grid = grid,
@@ -103,6 +108,7 @@ for(s in seq_along(sSeq)){
                                             lagsA = lagsA,
                                             lagsD = lagsD))
   
+  UVB <- SVB <- list(MCMC[[1]], MCMC[[1]], MCMC[[2]], MCMC[[2]])
   # Grab logscores etc. for heterogenous models
   results <- rbind(results,
                    data.frame(logscore = c(SVB[[1]]$logscore, SVB[[2]]$logscore, SVB[[3]]$logscore, SVB[[4]]$logscore,
@@ -113,7 +119,8 @@ for(s in seq_along(sSeq)){
                                        MCMC[[1]]$mapDist, MCMC[[2]]$mapDist),
                               h = rep(1:H, 10),
                               model = rep(c('IH', 'IH', 'CH', 'CH', 'IH', 'IH', 'CH', 'CH', 'IH', 'CH'), rep(H, 10)),
-                              inference = rep(c(rep('SVB', 4), rep('UVB', 4), rep('MCMC', 2)), rep(H, 10)),
+                              inference = rep(c('SVB-Single', 'SVB-Mixture', 'SVB-Single', 'SVB-Mixture', 'UVB-Single', 
+                                                'UVB-Mixture', 'UVB-Single', 'UVB-Mixture', 'MCMC', 'MCMC'), rep(H, 10)),
                               S = sSeq[s],
                               id = id)
                    )
@@ -146,7 +153,7 @@ for(s in seq_along(sSeq)){
   # Model 7-9: Const V (Zero A), same order of D
   x0 <- rep(data[sSeq[s], 4], 9)
   y0 <- rep(data[sSeq[s], 5], 9)
-  v0 <- rep(data[sSeq[s] + 1, 3], 9) 
+  v0 <- rep(data[sSeq[s], 3], 9) 
   
   
   for(h in 1:H){
@@ -164,7 +171,8 @@ for(s in seq_along(sSeq)){
                                 id = id))
   }
   
-  print(paste(i, s))
+  print(paste(iter, s))
 }
 
 write.csv(results, paste0('eval/car', id, '.csv'), row.names=FALSE)
+

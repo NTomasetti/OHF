@@ -1,3 +1,4 @@
+
 carsVB <- function(data, lambda, model, S = 25, maxIter = 5000, alpha = 0.01, beta1 = 0.9, beta2 = 0.99, threshold = 0.01, 
                    dimTheta = 6,  ...){
   dimLambda <- length(lambda)
@@ -77,8 +78,19 @@ singleMCMCallMH <- function(data, reps, draw, hyper, lagsA = 4, lagsD = 4, thin 
     oldDens <- nlogDensity(data, draw, hyper$mean, hyper$varInv, lagsA, lagsD)
   }
   for(i in 2:reps){
-    candidate <- draw
-    candidate <- candidate + stepsize * rnorm(dim)
+    
+    
+    stat <- FALSE
+    while(!stat){
+      candidate <- draw + stepsize * rnorm(dim)
+      poly1 <- polyroot(c(1, -candidate[3:(2 + lagsA)]))
+      poly2 <- polyroot(c(1, -candidate[(2 + lagsA + 1):(dim)]))
+      if(all(Mod(poly1) > 1) & all(Mod(poly2) > 1)){
+        stat <- TRUE
+      }
+    }
+    
+    
     if(mix){
       canDens <- nMixLogDens(data, candidate, hyper$mean, hyper$varInv, hyper$weights, lagsA, lagsD)
     } else {
@@ -194,21 +206,11 @@ fitVB <- function(data, prior, starting, dim, mix){
   fit[[2]] <- carsVBScore(data, starting[[2]], model = singlePriorMixApprox, dimTheta = dim, K = mix, mean = mean, Linv = linv, lagsA = 4, lagsD =4)$lambda
   
   # CH / Single Component Approx
-  cubeLinv <- array(0, dim = c(dim, dim, mix))
-  cubeSiginv <- array(0, dim = c(dim, dim, mix))
-  matMean <- matrix(0, dim, mix)
-  for(k in 1:mix){
-    cubeLinv[,,k] <- prior[[2]]$linv[(k-1)*dim + 1:dim, 1:dim]
-    cubeSiginv[,,k] <- prior[[2]]$varInv[(k-1)*dim + 1:dim, 1:dim]
-    matMean[,k] <- prior[[2]]$mean[(k-1)*dim + 1:dim]
-  }
-  
-  
-  fit[[3]] <- carsVB(data, starting[[1]], model = mixPriorSingleApprox, S = 5, dimTheta = dim, mean = matMean, Linv = cubeLinv,
+  fit[[3]] <- carsVB(data, starting[[1]], model = mixPriorSingleApprox, S = 5, dimTheta = dim, mean = prior[[2]]$mean, Linv = prior[[2]]$linv,
                      dets = prior[[2]]$dets, weights = prior[[2]]$weights, lagsA = 4, lagsD =4)$lambda
   
   # CH / Mixture
-  fit[[4]] <- carsVBScore(data, starting[[2]], model = mixPriorMixApprox, dimTheta = dim, K = mix, mean = matMean, SigInv = cubeSiginv,
+  fit[[4]] <- carsVBScore(data, starting[[2]], model = mixPriorMixApprox, dimTheta = dim, K = mix, mean = prior[[2]]$mean, SigInv = prior[[2]]$varInv,
                           dets = prior[[2]]$dets, weights = prior[[2]]$weights, lagsA = 4, lagsD = 4)$lambda
   
   return(fit)
@@ -263,24 +265,42 @@ fitUVB <- function(data, prior, starting, dim, mix){
 }
   
 MCMCDens <- function(data, H, grid, MCMCdraws, lagsA = 1, lagsD = 1){
-  adDens <-  evalMCMCDensIndep(data, nrow(grid), H, grid, MCMCdraws, lagsA, lagsD)
-
+  
+  # Calcualte prediction variance using ltsa
+  predVar <- array(0, dim = c(1000, H, 2))
+  for(i in 1:1000){
+    covA <- ltsa::tacvfARMA(phi = c(MCMCdraws[i, 3:6]), maxLag = H, sigma2 = exp(MCMCdraws[i, 1]))
+    predVar[i, , 1] <- ltsa::PredictionVariance(covA, maxLead = H)
+    covD <- ltsa::tacvfARMA(phi = c(MCMCdraws[i, 7:10]), maxLag = H, sigma2 = exp(MCMCdraws[i, 2]))
+    predVar[i, , 2] <- ltsa::PredictionVariance(covD, maxLead = H)
+  }
+  
+  # Evaluate forecast density up to H steps ahead along the grid
+  adDens <-  evalDensity(data, MCMCdraws, nrow(grid), H, grid, predVar, lagsA, lagsD)
+  
+  # Set up results
   results <- data.frame()
   adGrid <- expand.grid(a = grid[,1], d = grid[,2])
   starting <- max(lagsA, lagsD)
   mapX <- 0
   mapY <- 0
   for(h in 1:H){
+    # Set up grid of all combinations of a and d
     fullGrid <- cbind(adGrid, expand.grid(aD = adDens[,1,h], dD = adDens[,2,h]))
     fullGrid$v <- fullGrid$a + data[starting + h, 3]
+    # Transform a / d density to x / y density
     fullGrid$dens <- fullGrid$aD * fullGrid$dD / fullGrid$v
     fullGrid$x <- fullGrid$v * cos(fullGrid$d + 3.141598/2)
     fullGrid$y <- fullGrid$v * sin(fullGrid$d + 3.141598/2) 
+    # Calculate distance to true value
     fullGrid$dist <- sqrt((fullGrid$x - data[starting + h, 4] + data[starting + h - 1, 4])^2 + (fullGrid$y - data[starting + h, 5] + data[starting + h - 1, 5])^2)
     
+    # Logscore = Density at location that minimises distance
     logscore <- log(fullGrid$dens[which.min(fullGrid$dist)])
+    # Map = Location where density is a maximum
     mapX <- mapX + fullGrid$x[which.max(fullGrid$dens)]
     mapY <- mapY + fullGrid$y[which.max(fullGrid$dens)]
+    # Distance from (cumulative) map to actual location
     mapDist <- sqrt((mapX - data[starting+h, 4] + data[starting, 4])^2 + (mapY - data[starting + h, 5] + data[starting, 5])^2)
     
     results <- rbind(results, data.frame(h = h, logscore = logscore, mapDist = mapDist))
@@ -290,24 +310,46 @@ MCMCDens <- function(data, H, grid, MCMCdraws, lagsA = 1, lagsD = 1){
 }
 
 VBDens <- function(data, fit, grid, H, dim, K, isMix, lagsA = 1, lagsD = 1){
+  # This works the same as the MCMC evaluate
+  # But first we need to sample from the VB density to feed this into evalDensity()
   N <- nrow(grid)
+  draws <- matrix(0, 1000, 10)
   if(!isMix){
     mean <- fit[1:dim]
     L <- t(matrix(fit[dim + 1:dim^2], dim))
-    weights <- rep(1, dim)
+    weights <- 1
+    
+    for(i in 1:1000){
+      draws[i, ] <- mean + L %*% rnorm(10)
+    }
+    
   } else {
-    z <- fit[2*dim*mix + 1:mix]
+    z <- fit[2*dim*K + 1:K]
     pi <- exp(z) / sum(exp(z))
     weights <- cumsum(pi)
-    mean <- fit[1:(dim*mix)]
-    L <- matrix(0, dim*mix, dim)
-    for(k in 1:mix){
-      sd <- exp(fit[dim*mix + (k-1)*dim + 1:dim])
-      L[1:dim + (k-1)*dim, ] <- diag(sd)
+    mean <- matrix(fit[1:(dim*K)], ncol = K)
+    L <- array(0, dim = c(dim, dim, K))
+    for(k in 1:K){
+      sd <- exp(fit[dim*K + (k-1)*dim + 1:dim])
+      L[,,k] <- diag(sd)
+    }
+    for(i in 1:1000){
+      group <- sample(1:K, 1, prob = pi)
+      draws[i,] <- mean[, group] + L[,,group] %*% rnorm(10)
     }
   }
+  # From here this is the same as the MCMC version
   starting <- max(lagsA, lagsD)
-  adDens <- evalVBDensIndep(data, mean, L, weights, N, H, grid, isMix, dim, K, lagsA, lagsD)
+
+  predVar <- array(0, dim = c(1000, H, 2))
+  for(i in 1:1000){
+    covA <- ltsa::tacvfARMA(phi = c(draws[i, 3:6]), maxLag = H, sigma2 = exp(draws[i, 1]))
+    predVar[i, , 1] <- ltsa::PredictionVariance(covA, maxLead = H)
+    covD <- ltsa::tacvfARMA(phi = c(draws[i, 7:10]), maxLag = H, sigma2 = exp(draws[i, 2]))
+    predVar[i, , 2] <- ltsa::PredictionVariance(covD, maxLead = H)
+  }
+  
+  adDens <- evalDensity(data, draws, nrow(grid), H, grid, predVar, lagsA, lagsD)
   results <- data.frame()
   adGrid <- expand.grid(a = grid[,1], d = grid[,2])
   mapX <- 0
