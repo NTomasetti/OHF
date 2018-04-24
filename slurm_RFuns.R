@@ -264,14 +264,48 @@ fitUVB <- function(data, prior, starting, dim, mix){
   return(fit)
 }
   
+autocov <- function(phi, maxLag, sigma2){
+  
+  p <- length(phi)
+  
+  maxLagp1 <- maxLag + 1
+  r <- p + 1
+  b <- numeric(r)
+  phi2 <- numeric(3 * r)
+  phi2[r] <- -1
+  phi2[r + 1:p] <- phi
+  
+  b[1] <- b[1] + 1
+  
+  a <- matrix(numeric(r^2), ncol = r)
+  for (i in 1:r){
+    for (j in 1:r) {
+      if (j == 1) 
+        a[i, j] <- phi2[r + i - 1]
+      else 
+        a[i, j] <- phi2[r + i - j] + phi2[r + i + j - 2]
+    }
+  } 
+  g <- solve(a, -b)
+  if (length(g) <= maxLag) {
+    g <- c(g, numeric(maxLag - r))
+    for (i in (r + 1):maxLagp1) {
+      g[i] <- phi %*% g[i - 1:p]
+    }
+  }
+  
+  sigma2 * g[1:maxLagp1]
+}
+
 MCMCDens <- function(data, H, grid, MCMCdraws, lagsA = 1, lagsD = 1){
   
+  samples <- nrow(MCMCdraws)
   # Calcualte prediction variance using ltsa
-  predVar <- array(0, dim = c(1000, H, 2))
-  for(i in 1:1000){
-    covA <- ltsa::tacvfARMA(phi = c(MCMCdraws[i, 3:6]), maxLag = H, sigma2 = exp(MCMCdraws[i, 1]))
+  predVar <- array(0, dim = c(samples, H, 2))
+  for(i in 1:samples){
+    covA <- autocov(phi = c(MCMCdraws[i, 3:6]), maxLag = H, sigma2 = exp(MCMCdraws[i, 1]))
     predVar[i, , 1] <- ltsa::PredictionVariance(covA, maxLead = H)
-    covD <- ltsa::tacvfARMA(phi = c(MCMCdraws[i, 7:10]), maxLag = H, sigma2 = exp(MCMCdraws[i, 2]))
+    covD <- autocov(phi = c(MCMCdraws[i, 7:10]), maxLag = H, sigma2 = exp(MCMCdraws[i, 2]))
     predVar[i, , 2] <- ltsa::PredictionVariance(covD, maxLead = H)
   }
   
@@ -309,24 +343,67 @@ MCMCDens <- function(data, H, grid, MCMCdraws, lagsA = 1, lagsD = 1){
   results
 }
 
-VBDens <- function(data, fit, grid, H, dim, K, isMix, lagsA = 1, lagsD = 1){
+rtruncnorm <- function(n, mu, sd, min, max){
+  if(min >= max){
+    stop('min must be smaller than max')
+  }
+  minP <- pnorm(min, mu, sd)
+  maxP <- pnorm(max, mu, sd)
+  if(round(minP, 6) == 1 | round(maxP, 6) == 0){
+    runif(n, min, max)
+  } else {
+    u <- runif(n, minP, maxP)
+    qnorm(u, mu, sd)
+  }
+
+}
+
+VBDens <- function(data, fit, grid, H, dim, K, isMix, lagsA = 1, lagsD = 1, samples = 500){
   # This works the same as the MCMC density evaluation
   # But first we need to sample from the VB density to feed this into evalDensity()
   N <- nrow(grid)
-  draws <- matrix(0, 1000, 10)
+  draws <- matrix(0, samples, 10)
   if(!isMix){
     mean <- fit[1:dim]
     L <- t(matrix(fit[dim + 1:dim^2], dim))
     weights <- 1
     
-    for(i in 1:1000){
+    for(i in 1:samples){
       
       stat <- FALSE
+      try <- 0
       while(!stat){
+        try <- try + 1
         candidate <- mean + L %*% rnorm(10)
         poly1 <- polyroot(c(1, -candidate[3:(2 + lagsA)]))
         poly2 <- polyroot(c(1, -candidate[(2 + lagsA + 1):(dim)]))
         if(all(Mod(poly1) > 1) & all(Mod(poly2) > 1)){
+          stat <- TRUE
+        }
+        if(!stat & try > 5){
+          Sigma <- L %*% t(L)
+          if(!all(Mod(poly1) > 1)){
+            if(lagsA == 1){
+              candidate[3] <- rtruncnorm(1, mean[3], sqrt(Sigma[3, 3]), -1, 1)
+            } else {
+              candidate[3] <- rtruncnorm(1, mean[3], sqrt(Sigma[3, 3]), -2, 2)
+              candidate[4] <- rtruncnorm(1, mean[4], sqrt(Sigma[4, 4]), -1, 1 - abs(candidate[3]))
+              if(lagsA > 2){
+                candidate[5:(2 + lagsA)] <- 0
+              }
+            }
+          }
+          if(!all(Mod(poly2) > 1)){
+            if(lagsD == 1){
+              candidate[3 + lagsA] <- rtruncnorm(1, mean[3 + lagsA], sqrt(Sigma[3 + lagsA, 3 + lagsA]), -1, 1)
+            } else {
+              candidate[3 + lagsA] <- rtruncnorm(1, mean[3 + lagsA], sqrt(Sigma[3 + lagsA, 3 + lagsA]), -2, 2)
+              candidate[4 + lagsA] <- rtruncnorm(1, mean[4 + lagsA], sqrt(Sigma[4 + lagsA, 4 + lagsA]), -1, 1 - abs(candidate[3 + lagsA]))
+              if(lagsD > 2){
+                candidate[(5 + lagsA):dim] <- 0
+              }
+            }
+          }
           stat <- TRUE
         }
       }
@@ -343,14 +420,42 @@ VBDens <- function(data, fit, grid, H, dim, K, isMix, lagsA = 1, lagsD = 1){
       sd <- exp(fit[dim*K + (k-1)*dim + 1:dim])
       L[,,k] <- diag(sd)
     }
-    for(i in 1:1000){
+    for(i in 1:samples){
       group <- sample(1:K, 1, prob = pi)
       stat <- FALSE
+      try <- 0
       while(!stat){
+        try <- try + 1
         candidate <- mean[,group] + L[,,group] %*% rnorm(10)
         poly1 <- polyroot(c(1, -candidate[3:(2 + lagsA)]))
         poly2 <- polyroot(c(1, -candidate[(2 + lagsA + 1):(dim)]))
         if(all(Mod(poly1) > 1) & all(Mod(poly2) > 1)){
+          stat <- TRUE
+        }
+        if(!stat & try > 5){
+          Sigma <- L[,,group] %*% t(L[,,group])
+          if(!all(Mod(poly1) > 1)){
+            if(lagsA == 1){
+              candidate[3] <- rtruncnorm(1, mean[3, group], sqrt(Sigma[3, 3]), -1, 1)
+            } else {
+              candidate[3] <- rtruncnorm(1, mean[3, group], sqrt(Sigma[3, 3]), -2, 2)
+              candidate[4] <- rtruncnorm(1, mean[4, group], sqrt(Sigma[4, 4]), -1, 1 - abs(candidate[3]))
+              if(lagsA > 2){
+                candidate[5:(2 + lagsA)] <- 0
+              }
+            }
+          }
+          if(!all(Mod(poly2) > 1)){
+            if(lagsD == 1){
+              candidate[3 + lagsA] <- rtruncnorm(1, mean[3 + lagsA, group], sqrt(Sigma[3 + lagsA, 3 + lagsA]), -1, 1)
+            } else {
+              candidate[3 + lagsA] <- rtruncnorm(1, mean[3 + lagsA, group], sqrt(Sigma[3 + lagsA, 3 + lagsA]), -2, 2)
+              candidate[4 + lagsA] <- rtruncnorm(1, mean[4 + lagsA, group], sqrt(Sigma[4 + lagsA, 4 + lagsA]), -1, 1 - abs(candidate[3 + lagsA]))
+              if(lagsD > 2){
+                candidate[(5 + lagsA):dim] <- 0
+              }
+            }
+          }
           stat <- TRUE
         }
       }
@@ -361,19 +466,12 @@ VBDens <- function(data, fit, grid, H, dim, K, isMix, lagsA = 1, lagsD = 1){
   # From here this is the same as the MCMC version
   starting <- max(lagsA, lagsD)
 
-  predVar <- array(0, dim = c(1000, H, 2))
-  for(i in 1:1000){
-    covA <- ltsa::tacvfARMA(phi = c(draws[i, 3:6]), maxLag = H, sigma2 = exp(draws[i, 1]))
-    try(predVar[i, , 1] <- ltsa::PredictionVariance(covA, maxLead = H))
-    if(all(predVar[i, , 1] == 0)){
-      predVar[i, , 1] = predVar[i-1, , 1]
-    }
-    
-    covD <- ltsa::tacvfARMA(phi = c(draws[i, 7:10]), maxLag = H, sigma2 = exp(draws[i, 2]))
-    try(predVar[i, , 2] <- ltsa::PredictionVariance(covD, maxLead = H))
-    if(all(predVar[i, , 2] == 0)){
-      predVar[i, , 2] = predVar[i-1, , 2]
-    }
+  predVar <- array(0, dim = c(samples, H, 2))
+  for(i in 1:samples){
+    covA <- autocov(phi = c(draws[i, 3:6]), maxLag = H, sigma2 = exp(draws[i, 1]))
+    predVar[i, , 1] <- ltsa::PredictionVariance(covA, maxLead = H)
+    covD <- autocov(phi = c(draws[i, 7:10]), maxLag = H, sigma2 = exp(draws[i, 2]))
+    predVar[i, , 2] <- ltsa::PredictionVariance(covD, maxLead = H)
   }
   
   adDens <- evalDensity(data, draws, nrow(grid), H, grid, predVar, lagsA, lagsD)
@@ -394,8 +492,12 @@ VBDens <- function(data, fit, grid, H, dim, K, isMix, lagsA = 1, lagsD = 1){
     mapY <- mapY + fullGrid$y[which.max(fullGrid$dens)]
     mapDist <- sqrt((mapX - data[starting+h, 4] + data[starting, 4])^2 + (mapY - data[starting + h, 5] + data[starting, 5])^2)
 	
-    results <- rbind(results, data.frame(h = h, logscore = logscore, mapDist = mapDist, em = EMdist))
+    results <- rbind(results, data.frame(h = h, logscore = logscore, mapDist = mapDist))
     
   }
   results
 }
+
+
+
+

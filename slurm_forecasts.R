@@ -17,12 +17,12 @@ datatest <- readRDS('dataTest.RDS')
 data <- datatest[[i]]
 id <- ids[i]
 
-homogDraws <- readRDS('homogMCMCN2000.RDS')$draws[seq(2501, 7500, 5),]
+homogDraws <- readRDS('homogMCMCN2000.RDS')$draws[floor(seq(5001, 7500, length.out = 500)),]
 CHprior <- readRDS('CHFit.RDS')
 
 H <- 30
 S <- 10
-minT <- S
+minT <- 50
 maxT <- 400
 sSeq <- seq(minT, maxT, S)
 results <- data.frame()
@@ -56,7 +56,7 @@ dsup <- seq(dLower - 0.1, dUpper + 0.1, length.out = 200)
 grid <- cbind(asup, dsup)
 
 # Incrementally add data to VB fits
-for(s in seq_along(sSeq)){
+for(s in 5:36){#seq_along(sSeq)){
   if((sSeq[s] + H) > nrow(data)){
     break
   }
@@ -74,7 +74,7 @@ for(s in seq_along(sSeq)){
   MCMCDraw <- list()
   for(k in 1:2){
     MCMCDraw[[k]] <- singleMCMCallMH(data[1:sSeq[s],1:2], 15000, homogDraws[1, ], hyper[[k]],
-                                 stepsize = 0.05, mix = (k == 2))$draws[seq(10001, 15000, 5),]
+                                 stepsize = 0.05, mix = (k == 2))$draws[floor(seq(10001, 15000, length.out = 500)),]
   }
   
   # Evaluate predictive densities
@@ -121,8 +121,6 @@ for(s in seq_along(sSeq)){
                               model = rep(c('IH', 'IH', 'CH', 'CH', 'IH', 'IH', 'CH', 'CH', 'IH', 'CH'), rep(H, 10)),
                               inference = rep(c('SVB-Single', 'SVB-Mixture', 'SVB-Single', 'SVB-Mixture', 'UVB-Single', 
                                                 'UVB-Mixture', 'UVB-Single', 'UVB-Mixture', 'MCMC', 'MCMC'), rep(H, 10)),
-                              earthmover = c(SVB[[1]]$em, SVB[[2]]$em, SVB[[3]]$em, SVB[[4]]$em, 
-                                            UVB[[1]]$em, UVB[[2]]$em, UVB[[3]]$em, UVB[[4]]$em, rep(NA, 2*H)),
                               S = sSeq[s],
                               id = id)
                    )
@@ -140,7 +138,6 @@ for(s in seq_along(sSeq)){
                               h = 1:H,
                               model = 'Homogenous',
                               inference = 'MCMC',
-                              earthmover = NA,
                               S = sSeq[s],
                               id = id))
   
@@ -161,8 +158,8 @@ for(s in seq_along(sSeq)){
   
   for(h in 1:H){
     v0 <- v0 + c(rep(aConst, 3), rep(aAvg, 3), rep(0, 3))
-    x0 <- x0 + v0 * rep(c(cos(dConst + pi/2), cos(pi/2), cos(pi/2 + dAvg)), 3)
-    y0 <- y0 + v0 * rep(c(sin(dConst + pi/2), sin(pi/2), sin(pi/2 + dAvg)), 3)
+    x0 <- x0 + v0 * rep(c(cos(dConst + 3.141598/2), cos(3.141598/2), cos(3.141598/2 + dAvg)), 3)
+    y0 <- y0 + v0 * rep(c(sin(dConst + 3.141598/2), sin(3.141598/2), sin(3.141598/2 + dAvg)), 3)
     dist <- sqrt((x0 - data[sSeq[s] + h, 4])^2 + (y0 - data[sSeq[s] + h, 5])^2)
     results <- rbind(results,
                      data.frame(logscore = NA,
@@ -170,7 +167,6 @@ for(s in seq_along(sSeq)){
                                 h = h,
                                 model = paste('Naive', 1:9),
                                 inference = NA,
-                                earthmover = NA,
                                 S = sSeq[s],
                                 id = id))
   }

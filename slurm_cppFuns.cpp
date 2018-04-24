@@ -529,8 +529,9 @@ double nMixLogDens (mat data, vec theta, mat mu, cube varInv, vec weights, int l
 cube evalDensity (mat data, mat drawMatrix, int N, int H, mat grid, cube predVar, int lagsA, int lagsD){
   cube densities (N, 2, H, fill::zeros);
   boost::math::normal_distribution<> Zdist(0, 1);
+  int samples = drawMatrix.n_rows;
 
-  for(int m = 0; m < 1000; ++m){
+  for(int m = 0; m < samples; ++m){
     // Set up lags of predicted means, starting with the true data
     int maxLags = std::max(lagsA, lagsD);
     vec alags = data(span(std::min(0, lagsD - lagsA), maxLags-1), 0), dlags = data(span(std::min(0, lagsA - lagsD), maxLags-1), 1);
@@ -548,8 +549,8 @@ cube evalDensity (mat data, mat drawMatrix, int N, int H, mat grid, cube predVar
       double sdA = std::sqrt(predVar(m, h, 0)), sdD = std::sqrt(predVar(m, h, 1));
       // Iterate densities over the grid
       for(int i = 0; i < N; ++i){
-        densities(i, 0, h) += pdf(Zdist, (grid(i, 0) - afc) / sdA) / (1000 * sdA);
-        densities(i, 1, h) += pdf(Zdist, (grid(i, 1) - dfc) / sdD) / (1000 * sdD);
+        densities(i, 0, h) += pdf(Zdist, (grid(i, 0) - afc) / sdA) / (samples * sdA);
+        densities(i, 1, h) += pdf(Zdist, (grid(i, 1) - dfc) / sdD) / (samples * sdD);
       }
       // lag acceleration and angle
       for(int i = 0; i < lagsA - 1; ++i){
