@@ -204,32 +204,40 @@ fitVB <- function(data, prior, starting, dim, mix, time = FALSE){
     linv <- solve(t(u))
     start <- Sys.time()
     fit[[1]] <- carsVB(data, starting[[1]], model = singlePriorSingleApprox, S = 10, dimTheta = dim, mean = mean, Linv = linv,  lagsA = 4, lagsD =4)$lambda
-    timing[1] <- Sys.time() - start
-    if(attr(timing[1], 'units') == 'mins'){
-      timing[1] <- timing[1] * 60
+    elapsed <- Sys.time() - start
+    if(attr(elapsed, 'units') == 'mins'){
+      timing[1] <- elapsed * 60
+    } else {
+      timing[1] <- elapsed
     }
     # IH / Mixture
     start <- Sys.time()
     fit[[2]] <- carsVBScore(data, starting[[2]], model = singlePriorMixApprox, dimTheta = dim, K = mix, mean = mean, Linv = linv, lagsA = 4, lagsD =4)$lambda
-    timing[2] <- Sys.time() - start
-    if(attr(timing[2], 'units') == 'mins'){
-      timing[2] <- timing[2] * 60
+    elapsed <- Sys.time() - start
+    if(attr(elapsed, 'units') == 'mins'){
+      timing[2] <- elapsed * 60
+    } else {
+      timing[2] <- elapsed
     }
     # CH / Single Component Approx
     start <- Sys.time()
     fit[[3]] <- carsVB(data, starting[[1]], model = mixPriorSingleApprox, S = 10, dimTheta = dim, mean = prior[[2]]$mean, Linv = prior[[2]]$linv,
                        dets = prior[[2]]$dets, weights = prior[[2]]$weights, lagsA = 4, lagsD =4)$lambda
-    timing[3] <- Sys.time() - start
-    if(attr(timing[3], 'units') == 'mins'){
-      timing[3] <- timing[3] * 60
+    elapsed <- Sys.time() - start
+    if(attr(elapsed, 'units') == 'mins'){
+      timing[3] <- elapsed * 60
+    } else {
+      timing[3] <- elapsed
     }
     # CH / Mixture
     start <- Sys.time()
     fit[[4]] <- carsVBScore(data, starting[[2]], model = mixPriorMixApprox, dimTheta = dim, K = mix, mean = prior[[2]]$mean, SigInv = prior[[2]]$varInv,
                             dets = prior[[2]]$dets, weights = prior[[2]]$weights, lagsA = 4, lagsD = 4)$lambda
-    timing[4] <- Sys.time() - start
-    if(attr(timing[4], 'units') == 'mins'){
-      timing[4] <- timing[4] * 60
+    elapsed <- Sys.time() - start
+    if(attr(elapsed, 'units') == 'mins'){
+      timing[4] <- elapsed * 60
+    } else {
+      timing[4] <- elapsed
     }
     return(list(fit, timing))
   } else {
@@ -266,9 +274,11 @@ fitUVB <- function(data, prior, starting, dim, mix, time = FALSE){
     linv <- solve(t(u))
     start <- Sys.time()
     fit[[1]] <- carsVB(data, starting[[1]], model = singlePriorSingleApprox, dimTheta = dim, mean = mean, Linv = linv, lagsA = 4, lagsD = 4)$lambda
-    timing[1] <- Sys.time() - start
-    if(attr(timing[1], 'units') == 'mins'){
-      timing[1] <- timing[1] * 60
+    elapsed <- Sys.time() - start
+    if(attr(elapsed, 'units') == 'mins'){
+      timing[1] <- elapsed * 60
+    } else {
+      timing[1] <- elapsed
     }
     
     # IH / Mixture
@@ -286,9 +296,11 @@ fitUVB <- function(data, prior, starting, dim, mix, time = FALSE){
     start <- Sys.time()
     fit[[2]] <- carsVBScore(data, starting[[2]], model = mixPriorMixApprox, dimTheta = dim, K = mix, mean = mean, SigInv = siginv, 
                             dets = dets, weights = weights, lagsA = 4, lagsD = 4)$lambda
-    timing[2] <- Sys.time() - start
-    if(attr(timing[2], 'units') == 'mins'){
-      timing[2] <- timing[2] * 60
+    elapsed <- Sys.time() - start
+    if(attr(elapsed, 'units') == 'mins'){
+      timing[2] <- elapsed * 60
+    } else {
+      timing[2] <- elapsed
     }
     # CH / Single Component Approx
     mean <- prior[[3]][1:dim]
@@ -296,9 +308,11 @@ fitUVB <- function(data, prior, starting, dim, mix, time = FALSE){
     linv <- solve(t(u))
     start <- Sys.time()
     fit[[3]] <- carsVB(data, starting[[1]], model = singlePriorSingleApprox, dimTheta = dim, mean = mean, Linv = linv, lagsA = 4, lagsD = 4)$lambda
-    timing[3] <- Sys.time() - start
-    if(attr(time[3], 'units') == 'mins'){
-      timing[3] <- timing[3] * 60
+    elapsed <- Sys.time() - start
+    if(attr(elapsed, 'units') == 'mins'){
+      timing[3] <- elapsed * 60
+    } else {
+      timing[3] <- elapsed
     }
     
     # CH / Mixture
@@ -317,9 +331,11 @@ fitUVB <- function(data, prior, starting, dim, mix, time = FALSE){
     
     fit[[4]] <- carsVBScore(data, starting[[2]], model = mixPriorMixApprox, dimTheta = dim, K = mix, mean = mean, SigInv = siginv, 
                             dets = dets, weights = weights, lagsA = 4, lagsD = 4)$lambda
-    timing[4] <- Sys.time() - start
-    if(attr(time[4], 'units') == 'mins'){
-      timing[4] <- timing[4] * 60
+    elapsed <- Sys.time() - start
+    if(attr(elapsed, 'units') == 'mins'){
+      timing[4] <- elapsed * 60
+    } else {
+      timing[4] <- elapsed
     }
     
     return(list(fit, timing))

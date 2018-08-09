@@ -10,6 +10,10 @@ colnames(carsAug) <- c('ID', 'x', 'a', 'y', 'v', 'delta')
 
 carsAug <- readRDS('carsAug.RDS')
 
+carsAug %>%
+  filter(ID > 1000 & ID < 2000) %>%
+  ggplot() + geom_path(aes(relX, relY, group = ID)) + 
+  theme_bw() + labs(x = NULL, y = NULL)
 
 # Select training vehicles from the vehicles that did not stop.
 set.seed(1)

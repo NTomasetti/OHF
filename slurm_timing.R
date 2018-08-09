@@ -7,7 +7,6 @@ library(Rcpp, lib.loc = 'packages')
 library(RcppArmadillo, lib.loc = 'packages')
 library(RcppEigen, lib.loc = 'packages')
 library(rstan, lib.loc = 'packages')
-library(ltsa, lib.loc = 'packages')
 source('slurm_RFuns.R')
 sourceCpp('slurm_cppFuns.cpp')
 
@@ -21,9 +20,6 @@ CHprior <- readRDS('CHFit.RDS')
 
 
 
-
-
-H <- 30
 
 minT <- 50
 maxT <- 400
@@ -49,7 +45,7 @@ S <- c(1, 5, 10, 20)
 
 results <- data.frame(timing = fitInitial[[2]],
                       model = c('IH', 'IH', 'CH', 'CH'),
-                      infernece =  c('SVB-Single', 'SVB-Mixture', 'SVB-Single', 'SVB-Mixture', 'UVB-Single', 
+                      inference =  c('SVB-Single', 'SVB-Mixture', 'SVB-Single', 'SVB-Mixture', 'UVB-Single', 
                                      'UVB-Mixture', 'UVB-Single', 'UVB-Mixture'),
                       k = rep(S, rep(8, 4)),
                       S = minT,
@@ -61,7 +57,7 @@ for(k in 1:4){
   
   # Incrementally add data to VB fits
   for(s in seq_along(sSeq)){
-    if((sSeq[s] + H) > nrow(data)){
+    if(sSeq[s] > nrow(data)){
       break
     }
     
@@ -69,7 +65,7 @@ for(k in 1:4){
     fitOffline <- fitVB(data[1:sSeq[s], 1:2], prior, starting, dim = 10, mix = K, time = TRUE)
     
     if(s == 1){
-      fitOnline <- fitUVB(data[(sSeq[s-1]-(max(lagsA, lagsD) - 1)):sSeq[s], 1:2], fitInitial[[1]], starting, dim = 10, mix = K, time = TRUE)
+      fitOnline <- fitUVB(data[(minT-(max(lagsA, lagsD) - 1)):sSeq[s], 1:2], fitInitial[[1]], starting, dim = 10, mix = K, time = TRUE)
     } else {
       fitOnline <- fitUVB(data[(sSeq[s-1]-(max(lagsA, lagsD) - 1)):sSeq[s], 1:2], fitOnline[[1]], starting, dim = 10, mix = K, time = TRUE)
     }
@@ -77,7 +73,7 @@ for(k in 1:4){
     
     # Grab logscores etc. for heterogenous models
     results <- rbind(results,
-                     data.frame(timing = c(fitOffline[[2]], fitOnfline[[2]]),
+                     data.frame(timing = c(fitOffline[[2]], fitOnline[[2]]),
                                 model = c('IH', 'IH', 'CH', 'CH'),
                                 inference = c('SVB-Single', 'SVB-Mixture', 'SVB-Single', 'SVB-Mixture', 'UVB-Single', 
                                                   'UVB-Mixture', 'UVB-Single', 'UVB-Mixture'),
@@ -88,8 +84,5 @@ for(k in 1:4){
   }
 }
 
-
-
-
-write.csv(results, paste0('eval/car', id, '.csv'), row.names=FALSE)
+write.csv(results, paste0('timing/car', id, '.csv'), row.names=FALSE)
 
